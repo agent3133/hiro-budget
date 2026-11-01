@@ -1,0 +1,5 @@
+* text=auto eol=lf
+*.pdf binary
+
+# Not part of the public repository (scripts/export_public.py uses git archive)
+CLAUDE.md export-ignore

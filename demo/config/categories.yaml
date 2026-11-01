@@ -1,0 +1,106 @@
+# Category structure. Copied to categories.yaml on first run.
+# Keys are stable identifiers (group.category) referenced by rules and stored in the database.
+# Renaming a category: change `name`, keep `key`. Removing one hides it (history is kept).
+
+groups:
+  - key: wohnen
+    name: Wohnen
+    categories:
+      - {key: baufinanzierung, name: Baufinanzierung}
+      - {key: nebenkosten, name: Nebenkosten/Hausgeld}
+      - {key: energie, name: Energie/Wasser}
+      - {key: internet_telefon, name: Internet & Telefon}
+      - {key: instandhaltung, name: Instandhaltung & Baumarkt}
+      - {key: handwerker, name: Handwerker}
+  - key: lebensmittel
+    name: Lebensmittel
+    categories:
+      - {key: supermarkt, name: Supermarkt}
+      - {key: baeckerei, name: Bäckerei}
+      - {key: drogerie, name: Drogerie}
+      - {key: getraenke, name: Getränke}
+  - key: mobilitaet
+    name: Mobilität
+    categories:
+      - {key: oepnv, name: ÖPNV}
+      - {key: auto, name: Auto & Tanken}
+      - {key: fahrrad, name: Fahrrad}
+  - key: versicherungen
+    name: Versicherungen
+    categories:
+      - {key: haftpflicht_hausrat, name: Haftpflicht/Hausrat}
+      - {key: kranken_leben, name: Kranken/Leben}
+      - {key: grundeigentum, name: Grundeigentum}
+  - key: gesundheit
+    name: Gesundheit
+    categories:
+      - {key: apotheke, name: Apotheke}
+      - {key: aerzte, name: Ärzte}
+  - key: kinder
+    name: Kinder
+    categories:
+      - {key: betreuung, name: Betreuung}
+      - {key: kleidung_spielzeug, name: Kleidung & Spielzeug}
+      - {key: schulessen, name: Schulessen}
+      - {key: weiterbildung_sport, name: Weiterbildung/Sport}
+      - {key: handy, name: Handy}
+  - key: freizeit
+    name: Freizeit
+    categories:
+      - {key: restaurants, name: Restaurants & Café}
+      - {key: kleidung, name: Kleidung}
+      - {key: sport_hobby, name: Sport & Hobby}
+      - {key: medien, name: Bücher & Medien}
+      - {key: abos, name: Abos}
+      - {key: sonstiges, name: Sonstiges}
+  - key: gebuehren
+    name: Gebühren
+    categories:
+      - {key: bankentgelte, name: Bankentgelte}
+      - {key: datensicherung, name: Datensicherung}
+      - {key: rundfunkbeitrag, name: Rundfunkbeitrag}
+      - {key: sonstiges, name: Sonstiges}
+  - key: steuern
+    name: Steuern
+    categories:
+      - {key: kapitalertragsteuer, name: Kapitalertragsteuer}
+      - {key: grundsteuer, name: Grundsteuer}
+  - key: sparen
+    name: Sparen
+    categories:
+      - key: wertpapiere
+        name: Rente
+        target: {type: monthly, amount: 400.0}
+      - key: urlaub
+        name: Winterurlaub
+        target: {type: balance, amount: 1500.0, date: 2028-01-08}
+      - key: yacht
+        name: Segelyacht
+        target: {type: by_date, amount: 45000.0, date: 2029-09-30}
+      - key: notgroschen
+        name: Notgroschen
+        target: {type: balance, amount: 7000.0, date: 2027-10-01}
+  - key: haustier
+    name: Haustier
+    categories:
+      - {key: futter, name: Futter}
+      - {key: tierarzt, name: Tierarzt}
+      - {key: versicherung, name: Versicherung}
+      - {key: hundesteuer, name: Hundesteuer}
+      - {key: zubehoer, name: Zubehör & Pflege}
+  - key: sonstiges
+    name: Sonstiges
+    categories:
+      - {key: online, name: Online-Einkäufe}
+      - {key: geschenke, name: Geschenke}
+      - {key: spenden, name: Spenden}
+      - {key: sonstiges, name: Sonstiges}
+  - key: einkommen
+    name: Einkommen
+    income: true
+    categories:
+      - {key: gehalt, name: Gehalt}
+      - {key: erstattungen, name: Erstattungen}
+      - {key: kapitalertraege, name: Kapitalerträge}
+      - {key: sonstige_einnahmen, name: Sonstige Einnahmen}
+      - {key: kindergeld, name: Kindergeld}

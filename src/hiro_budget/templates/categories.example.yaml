@@ -1,0 +1,106 @@
+# Category structure. Copied to categories.yaml on first run.
+# Keys are stable identifiers (group.category) referenced by rules and stored in the database.
+# Renaming a category: change `name`, keep `key`. Removing one hides it (history is kept).
+#
+# Optional budget target per category (also editable in the Budget tab):
+#   target: {type: monthly, amount: 600}                          # every month
+#   target: {type: by_date, amount: 1200, date: 2027-06-01}       # by a date
+#   target: {type: repeating, amount: 480, date: 2027-03-01, every_months: 12}
+#   target: {type: balance, amount: 5000}                         # build up a balance
+#
+# A group can be budgeted as a whole (one amount for all its categories, also switchable
+# in the Budget tab). The target then belongs to the group:
+#   - key: lebensmittel
+#     name: Lebensmittel
+#     budget: group
+#     target: {type: monthly, amount: 900}
+#
+# For reports only (the budget always uses the booking date; both are also columns of the
+# category editor, "One-off" and "Report month"):
+#   one_off: true           irregular income or expenses (bonus, tax refund, repairs); the
+#                           reports can leave them out ("Include one-offs" in the filter bar)
+#   report_shift_days: 5    bookings on day 1-5 count for the previous month, e.g. a
+#                           month-end instalment that is debited on the 1st after a weekend
+#   - {key: baufinanzierung, name: Baufinanzierung, report_shift_days: 5}
+#   - {key: reparaturen, name: Reparaturen, one_off: true}
+
+groups:
+  - key: einkommen
+    name: Einkommen
+    income: true
+    categories:
+      - {key: gehalt, name: Gehalt}
+      - {key: erstattungen, name: Erstattungen}
+      - {key: kapitalertraege, name: Kapitalerträge}
+      - {key: sonstige_einnahmen, name: Sonstige Einnahmen}
+
+  - key: wohnen
+    name: Wohnen
+    categories:
+      - {key: baufinanzierung, name: Baufinanzierung}
+      - {key: nebenkosten, name: Nebenkosten/Hausgeld}
+      - {key: energie, name: Energie}
+      - {key: internet_telefon, name: Internet & Telefon}
+      - {key: instandhaltung, name: Instandhaltung & Baumarkt}
+
+  - key: lebensmittel
+    name: Lebensmittel
+    categories:
+      - {key: supermarkt, name: Supermarkt}
+      - {key: baeckerei, name: Bäckerei}
+      - {key: drogerie, name: Drogerie}
+
+  - key: mobilitaet
+    name: Mobilität
+    categories:
+      - {key: oepnv, name: ÖPNV}
+      - {key: auto, name: Auto & Tanken}
+
+  - key: versicherungen
+    name: Versicherungen
+    categories:
+      - {key: haftpflicht_hausrat, name: Haftpflicht/Hausrat}
+      - {key: kranken_leben, name: Kranken/Leben}
+
+  - key: gesundheit
+    name: Gesundheit
+    categories:
+      - {key: apotheke, name: Apotheke}
+      - {key: aerzte, name: Ärzte}
+
+  - key: kinder
+    name: Kinder
+    categories:
+      - {key: betreuung, name: Betreuung}
+      - {key: kleidung_spielzeug, name: Kleidung & Spielzeug}
+
+  - key: freizeit
+    name: Freizeit
+    categories:
+      - {key: restaurants, name: Restaurants & Café}
+      - {key: kleidung, name: Kleidung}
+      - {key: sport_hobby, name: Sport & Hobby}
+      - {key: medien, name: Bücher & Medien}
+      - {key: abos, name: Abos}
+
+  - key: gebuehren
+    name: Gebühren
+    categories:
+      - {key: bankentgelte, name: Bankentgelte}
+
+  - key: steuern
+    name: Steuern
+    categories:
+      - {key: kapitalertragsteuer, name: Kapitalertragsteuer}
+
+  - key: sparen
+    name: Sparen
+    categories:
+      - {key: wertpapiere, name: Wertpapiere}
+
+  - key: sonstiges
+    name: Sonstiges
+    categories:
+      - {key: online, name: Online-Einkäufe}
+      - {key: geschenke, name: Geschenke}
+      - {key: sonstiges, name: Sonstiges}

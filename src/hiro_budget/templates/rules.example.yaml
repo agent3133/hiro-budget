@@ -1,0 +1,68 @@
+# Categorization rules. Copied to rules.yaml on first run.
+# Rules are checked in order; the first matching rule wins.
+# All fields given under `match` must match. Text fields are regular expressions
+# (use "(?i)" for case-insensitive). Amounts are in EUR, negative = outgoing.
+#
+# Match fields: counterparty, merchant, purpose, booking_type, account,
+#               amount_min, amount_max
+
+rules:
+  - id: gehalt
+    category: einkommen.gehalt
+    match: {booking_type: "^Gehalt/Rente$"}
+
+  - id: supermarkt
+    category: lebensmittel.supermarkt
+    match: {merchant: "(?i)rewe|aldi|lidl|penny|edeka|netto|biokaiser|family markt|tegut"}
+
+  - id: baeckerei
+    category: lebensmittel.baeckerei
+    match: {merchant: "(?i)baeckerei|bäckerei|baecker|bäcker"}
+
+  - id: drogerie
+    category: lebensmittel.drogerie
+    match: {merchant: "(?i)dm[- ]drogerie|rossmann|mueller|müller"}
+
+  - id: baumarkt
+    category: wohnen.instandhaltung
+    match: {merchant: "(?i)hornbach|obi|bauhaus|toom"}
+
+  - id: telefon
+    category: wohnen.internet_telefon
+    match: {counterparty: "(?i)vodafone|telekom|o2|1&1"}
+
+  - id: oepnv
+    category: mobilitaet.oepnv
+    match: {merchant: "(?i)rmv|deutsche bahn|db vertrieb", amount_max: 0}
+
+  - id: apotheke
+    category: gesundheit.apotheke
+    match: {merchant: "(?i)apotheke"}
+
+  - id: restaurants
+    category: freizeit.restaurants
+    match: {merchant: "(?i)mcdonalds|burger king|gasthaus|restaurant|cucina|pizzeria|cafe"}
+
+  - id: medien
+    category: freizeit.medien
+    match: {merchant: "(?i)thalia|hugendubel"}
+
+  - id: sport
+    category: freizeit.sport_hobby
+    match: {merchant: "(?i)decathlon"}
+
+  - id: online
+    category: sonstiges.online
+    match: {merchant: "(?i)ebay|amazon|vinted|limango"}
+
+  - id: bankentgelte
+    category: gebuehren.bankentgelte
+    match: {booking_type: "^Entgelt$"}
+
+  - id: kapitalertraege
+    category: einkommen.kapitalertraege
+    match: {booking_type: "^(Zins/Dividende|Zinsertrag|Zinsgutschrift)"}
+
+  - id: kapitalertragsteuer
+    category: steuern.kapitalertragsteuer
+    match: {booking_type: "^(Kapitalertragsteuer|Solidaritätszuschlag|Kirchensteuer)$"}

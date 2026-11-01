@@ -1,0 +1,119 @@
+# Main configuration. Copied to config.yaml on first run - edit that file, not this one.
+# Relative paths are resolved against the project root (parent of the config directory).
+
+database:
+  path: data/finance.db
+
+# UI language: de | en
+language: de
+
+# Look: system (light/dark as set in Windows) | light | dark | obsidian (warm design) | obsidian_dark
+theme: system
+
+logging:
+  level: INFO
+
+# Folder where you save new statements (PDF). The Import button in the title bar shows
+# a dot when it holds files that are not imported yet, and opens with them.
+import_folder: input
+
+# Your own accounts (also editable in the GUI, tab "Konten"). Bookings matching an
+# account's `match` patterns are treated as transfers between own accounts and excluded
+# from income/expense reports.
+# kind: giro | savings | cash | credit_card | depot | loan
+# opening_balance/opening_date (optional): balance on that date; later bookings are added.
+# Without it, the opening balance of the account's first imported statement is used.
+# Securities accounts (depot): the value of the latest imported Depotauszug plus later
+# bookings. iban holds the depot number ("Direkt-Depot Nr.").
+# transfer_category (optional): budget category for money moved from a budget account
+# into this tracking account (e.g. ETF purchases); otherwise it is uncategorized outflow.
+own_accounts:
+  - name: ING Girokonto
+    kind: giro
+    institution: ING
+    iban: DE00 0000 0000 0000 0000 00
+  - name: ING Extra-Konto
+    kind: savings
+    institution: ING
+    match:
+      purpose: "(?i)extra-?konto"
+  - name: ING Direkt-Depot
+    kind: depot
+    institution: ING
+    iban: "0000000000"
+    # securities purchases and sales on the Extra-Konto/Girokonto
+    match:
+      purpose: "(?i)WP-ABRECHNUNG"
+    transfer_category: sparen.wertpapiere
+  - name: ING Baufinanzierung
+    kind: loan
+    institution: ING
+    # IBAN from the loan statement: its closing balance becomes the loan balance.
+    # Without statements: remaining debt as negative opening balance; principal
+    # repayments reduce it.
+    # iban: DE00 0000 0000 0000 0000 00
+    # opening_balance: -250000.00
+    # opening_date: 2026-01-01
+  - name: Revolut
+    kind: giro
+    institution: Revolut
+    iban: LT00 0000 0000 0000 0000  # each account its own IBAN
+    # top-ups as seen on the Girokonto ("VISA REVOLUT**1234*")
+    match:
+      counterparty: "(?i)revolut"
+  - name: Bargeld
+    kind: cash
+    opening_balance: 0.00
+    opening_date: 2026-01-01
+
+# Mortgage payments: split into interest (expense) and principal (transfer to the loan
+# account). The loan is a tracking account, so the principal leaves the budget and needs
+# its own budget category (principal_category).
+mortgage:
+  - name: ING Baufinanzierung
+    loan_account: ING Baufinanzierung
+    interest_category: wohnen.baufinanzierung
+    principal_category: wohnen.baufinanzierung
+    match:
+      purpose: "(?i)ZINSEN.*TILGUNG"
+
+# Budget: first month of the envelope budget ("YYYY-MM"). Empty: month of the first
+# booking on a budget account. Earlier bookings only count as starting balance.
+budget:
+  start_month:
+  # "Budget vorschlagen": months considered for regular categories (median) and rounding
+  # of proposals up to a multiple of this many euros (0 = exact).
+  proposal_months: 6
+  proposal_round_to: 10
+
+# Imported bank bookings replace manual entries on the same account with the same amount
+# whose date differs by at most this many days.
+matching:
+  days: 7
+
+# Backups (database + configuration) in <database folder>/backups: one before every
+# import, the newest "keep" are kept. Also: File > Create backup.
+backup:
+  before_import: true
+  keep: 10
+
+# Online banking (FinTS): set up in Settings > Bank access. Per login the bank's accounts,
+# the app account each goes to and the first day fetched (statements cover the days before;
+# no fetch_from: as far back as the bank allows). The PIN is never stored here.
+# product_id: registered with the Deutsche Kreditwirtschaft; empty: a placeholder is sent.
+# fints:
+#   product_id:
+#   logins:
+#     - name: ING
+#       bank_code: "50010517"
+#       server: https://fints.ing.de/fints/
+#       login_id: "1234567890"
+#       accounts:
+#         - {bank_id: DE12345678901234567890, product: Girokonto, kind: giro, account: ING Girokonto, fetch_from: 2026-04-01}
+
+# Local ML classifier (applied after the YAML rules).
+ml:
+  enabled: true
+  min_samples: 30
+  min_confidence: 0.6
+  model_path: data/classifier.npz

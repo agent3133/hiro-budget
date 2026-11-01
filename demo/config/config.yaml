@@ -1,0 +1,92 @@
+# Demo configuration: a fictional family (see demo/generate.py, which creates the database).
+# Start the app on it with:  uv run ing-analyser --config-dir demo/config
+# Relative paths are resolved against demo/ (the parent of this directory).
+
+database:
+  path: data/demo.db
+
+language: de
+theme: obsidian
+
+logging:
+  level: INFO
+
+import_folder: input
+
+# IBANs, card numbers and patterns must match what demo/generate.py produces.
+own_accounts:
+  - name: ING Girokonto
+    kind: giro
+    institution: ING
+    iban: DE00 5001 0517 5403 8172 96
+    # standing order / transfers from the Extra-Konto, Revolut top-ups with the Visa card
+    match:
+      purpose: "(?i)extra-?konto|einzahlung von \\*4821"
+  - name: ING Extra-Konto
+    kind: savings
+    institution: ING
+    iban: DE00 5001 0517 5627 3948 10
+    match:
+      purpose: "(?i)extra-?konto"
+  - name: ING Direkt-Depot
+    kind: depot
+    institution: ING
+    iban: "8015237461"
+    # savings plan purchases on the Extra-Konto
+    match:
+      purpose: "(?i)WP-ABRECHNUNG"
+    transfer_category: sparen.wertpapiere
+  - name: ING Baufinanzierung
+    kind: loan
+    institution: ING
+    iban: DE00 5001 0517 8061 5293 74
+    # special repayments from the Extra-Konto
+    match:
+      purpose: "(?i)sondertilgung"
+    transfer_category: wohnen.baufinanzierung
+  - name: Revolut
+    kind: giro
+    institution: Revolut
+    iban: DE00 1001 0178 4920 5837 16
+    match:
+      counterparty: "(?i)revolut"
+  - name: Bargeld Papa
+    kind: cash
+    match:
+      purpose: "NR XXXX 4821 .*BARGELDAUSZAHLUNG"
+    opening_balance: 60.00
+    opening_date: 2016-11-01
+  - name: Bargeld Mama
+    kind: cash
+    match:
+      purpose: "NR XXXX 7390 .*BARGELDAUSZAHLUNG"
+    opening_balance: 40.00
+    opening_date: 2016-11-01
+
+mortgage:
+  - name: ING Baufinanzierung
+    loan_account: ING Baufinanzierung
+    interest_category: wohnen.baufinanzierung
+    principal_category: wohnen.baufinanzierung
+    match:
+      purpose: "(?i)ZINSEN.*TILGUNG"
+
+budget:
+  start_month: 2021-11
+  proposal_months: 6
+  proposal_round_to: 10
+
+matching:
+  days: 7
+
+backup:
+  before_import: true
+  keep: 10
+
+# No classifier in the demo: every booking is categorized by a rule, a transfer, the
+# mortgage split or by hand.
+ml:
+  enabled: false
+  min_samples: 30
+  min_confidence: 0.6
+  model_path: data/classifier.joblib

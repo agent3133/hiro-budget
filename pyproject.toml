@@ -1,0 +1,59 @@
+[project]
+name = "hiro-budget"
+version = "0.1.0"
+description = "Hiro Budget: a local family budget (YNAB-style): import bank statements, categorize, report"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+dependencies = [
+    "alembic>=1.20.0",
+    "fints>=5.0.1",
+    "numpy>=2.3",
+    "openpyxl>=3.1.5",
+    "pdfplumber>=0.11.10",
+    "pydantic>=2",
+    "pyside6>=6.12.0",
+    "ruamel-yaml>=0.19.1",
+    "sqlalchemy>=2",
+]
+
+[project.scripts]
+hiro-budget = "hiro_budget.__main__:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/hiro_budget"]
+
+[dependency-groups]
+build = [
+    "nuitka>=4.3.1",
+]
+demo = [
+    "faker>=40.43.0",
+]
+dev = [
+    "fpdf2>=2.8.9",
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.17.1",
+]
+
+[tool.uv]
+default-groups = ["dev", "demo"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+qt_api = "pyside6"
+markers = ["incremental: ordered steps of a scenario; a failing step skips the rest"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["src/hiro_budget/db/migrations/versions"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]

@@ -1,0 +1,27 @@
+name: ING Umsatzanzeige
+institution: ING
+detect:
+  header_has: [Buchung, Wertstellungsdatum, Auftraggeber/Empfänger, Verwendungszweck]
+encoding: latin-1
+delimiter: ";"
+account:
+  iban_from: IBAN
+  name_from: Kontoname
+columns:
+  booking_date: Buchung
+  value_date: Wertstellungsdatum
+  counterparty: Auftraggeber/Empfänger
+  booking_type: Buchungstext
+  purpose: Verwendungszweck
+  reference: Referenz
+  amount: Betrag
+  balance: Saldo
+values:
+  # as on the PDF statements, so that the same booking is recognised in both
+  booking_type:
+    "Dauerauftrag / Terminueberweisung": Dauerauftrag/Terminueberw.
+    Gutschrift aus Dauerauftrag: Gutschrift/Dauerauftrag
+    Gutschrift Echtzeitüberweisung: Gutschrift
+    Überweisung: Ueberweisung
+    "Zins / Dividende WP": Zins/Dividende WP
+enrich: ING

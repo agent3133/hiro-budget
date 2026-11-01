@@ -1,0 +1,7 @@
+name: ing_giro_pdf
+version: 1.0.0
+api: 1
+description: ING Kontoauszug as PDF (Girokonto, Extra-Konto)
+requires: [ing_common]
+importers:
+  - {module: importer, class: IngGiroPdfImporter}

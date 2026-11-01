@@ -1,0 +1,34 @@
+name: Revolut
+institution: Revolut
+detect:
+  header_has: [Type, Product, Started Date, Completed Date, Description, Fee, State, Balance]
+date_format: "%Y-%m-%d %H:%M:%S"
+decimal_comma: false
+account:
+  name: Revolut
+columns:
+  booking_date: Completed Date
+  value_date: Started Date
+  counterparty: Description
+  merchant: Description
+  booking_type: Type
+  amount: Amount
+  fee: Fee
+  balance: Balance
+only:
+  - {column: Product, equals: Current}
+  - {column: Currency, equals: EUR}
+  - {column: State, equals: COMPLETED}
+skip:
+  # the balance moving between Revolut entities (pairs that cancel out)
+  - {column: Description, matches: "^Balance migration to another region or legal entity$"}
+values:
+  # as on the PDF statements
+  booking_type:
+    Card Payment: Kartenzahlung
+    Card Refund: Kartengutschrift
+    Deposit: Einzahlung
+    Transfer: Überweisung
+# bookings already imported from Revolut PDF statements are recognised by date and amount
+match_by: date_amount
+

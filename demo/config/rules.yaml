@@ -1,0 +1,187 @@
+# Demo categorization rules (they match the payees demo/generate.py produces).
+# Rules are checked in order; the first matching rule wins. Text fields are regular
+# expressions, amounts are in EUR (negative = outgoing).
+#
+# Match fields: counterparty, merchant, purpose, booking_type, account,
+#               amount_min, amount_max
+
+rules:
+  # --- income ---
+  - id: gehalt
+    category: einkommen.gehalt
+    match: {booking_type: "^Gehalt/Rente$"}
+
+  - id: kindergeld
+    category: einkommen.kindergeld
+    match: {counterparty: "(?i)familienkasse"}
+
+  - id: steuererstattung
+    category: einkommen.erstattungen
+    match: {counterparty: "(?i)finanzamt", amount_min: 0}
+
+  - id: kapitalertraege
+    category: einkommen.kapitalertraege
+    match: {booking_type: "^(Zins/Dividende|Zinsertrag|Zinsgutschrift)"}
+
+  - id: kapitalertragsteuer
+    category: steuern.kapitalertragsteuer
+    match: {booking_type: "^(Kapitalertragsteuer|Solidaritätszuschlag|Kirchensteuer)$"}
+
+  - id: bankentgelte
+    category: gebuehren.bankentgelte
+    match: {booking_type: "^Entgelt$"}
+
+  # --- contracts (direct debits) ---
+  - id: energie
+    category: wohnen.energie
+    match: {counterparty: "(?i)entega|lichtblick|octopus energy"}
+
+  - id: schornsteinfeger
+    category: wohnen.nebenkosten
+    match: {counterparty: "(?i)schornsteinfeger"}
+
+  - id: hundesteuer
+    category: haustier.hundesteuer
+    match: {counterparty: "(?i)wissenschaftsstadt darmstadt", purpose: "(?i)hundesteuer"}
+
+  - id: hundehaftpflicht
+    category: haustier.versicherung
+    match: {counterparty: "(?i)uelzener"}
+
+  - id: kita
+    category: kinder.betreuung
+    match: {counterparty: "(?i)wissenschaftsstadt darmstadt", purpose: "(?i)kita|betreuung"}
+
+  - id: schulessen
+    category: kinder.schulessen
+    match: {counterparty: "(?i)schulverpflegung"}
+
+  - id: kinder_handy
+    category: kinder.handy
+    match: {counterparty: "(?i)aldi talk|medionmobile"}
+
+  - id: telefon
+    category: wohnen.internet_telefon
+    match: {counterparty: "(?i)telekom|vodafone|congstar"}
+
+  - id: hausrat_haftpflicht
+    category: versicherungen.haftpflicht_hausrat
+    match: {counterparty: "(?i)allianz"}
+
+  - id: wohngebaeude
+    category: versicherungen.grundeigentum
+    match: {counterparty: "(?i)gothaer"}
+
+  - id: kranken_leben
+    category: versicherungen.kranken_leben
+    match: {counterparty: "(?i)hannoversche|barmenia", amount_max: 0}
+
+  - id: kfz
+    category: mobilitaet.auto
+    match: {counterparty: "(?i)huk-coburg|hauptzollamt|adac"}
+
+  - id: deutschlandticket
+    category: mobilitaet.oepnv
+    match: {counterparty: "(?i)db vertrieb"}
+
+  - id: rundfunkbeitrag
+    category: gebuehren.rundfunkbeitrag
+    match: {counterparty: "(?i)rundfunk ard"}
+
+  - id: streaming
+    category: freizeit.abos
+    match: {counterparty: "(?i)netflix|spotify|disney plus|vrm gmbh"}
+
+  - id: amazon_prime
+    category: freizeit.abos
+    match: {counterparty: "(?i)amazon payments", purpose: "(?i)prime"}
+
+  - id: fitness
+    category: freizeit.sport_hobby
+    match: {counterparty: "(?i)fitx|urban sports"}
+
+  - id: verein_musikschule
+    category: kinder.weiterbildung_sport
+    match: {counterparty: "(?i)sportverein|musikschule"}
+
+  - id: spenden
+    category: sonstiges.spenden
+    match: {counterparty: "(?i)aerzte ohne grenzen|unicef"}
+
+  # --- card payments (merchant) ---
+  - id: supermarkt
+    category: lebensmittel.supermarkt
+    match:
+      merchant: "(?i)rewe|aldi|lidl|edeka|netto|albert heijn|jumbo|carrefour|intermarche|\\bspar\\b|conad|coop|konzum|pingo doce|continente|foetex"
+
+  - id: baeckerei
+    category: lebensmittel.baeckerei
+    match: {merchant: "(?i)kamps|backwerk|baeckerei schweizer"}
+
+  - id: drogerie
+    category: lebensmittel.drogerie
+    match: {merchant: "(?i)dm-drogerie"}
+
+  - id: getraenke
+    category: lebensmittel.getraenke
+    match: {merchant: "(?i)trinkgut|getraenke hoffmann"}
+
+  - id: tanken_werkstatt
+    category: mobilitaet.auto
+    match: {merchant: "(?i)\\baral\\b|shell|\\beni\\b|atu auto|dekra|asfinag|autostrade|peage|apcoa|contipark"}
+
+  - id: oepnv
+    category: mobilitaet.oepnv
+    match: {merchant: "(?i)\\brmv\\b|heag mobilo", amount_max: 0}
+
+  - id: apotheke
+    category: gesundheit.apotheke
+    match: {merchant: "(?i)apotheke"}
+
+  - id: restaurants
+    category: freizeit.restaurants
+    match: {merchant: "(?i)mcdonalds|burger king|vapiano|ristorante"}
+
+  - id: kleidung
+    category: freizeit.kleidung
+    match: {merchant: "(?i)h&m|zalando"}
+
+  - id: kinder_spielzeug
+    category: kinder.kleidung_spielzeug
+    match: {merchant: "(?i)smyths|mytoys"}
+
+  - id: schulbedarf
+    category: kinder.weiterbildung_sport
+    match: {merchant: "(?i)mcpaper"}
+
+  - id: baumarkt
+    category: wohnen.instandhaltung
+    match: {merchant: "(?i)hornbach|\\bobi\\b|bauhaus|toom"}
+
+  - id: medien
+    category: freizeit.medien
+    match: {merchant: "(?i)thalia|hugendubel"}
+
+  - id: kino
+    category: freizeit.sonstiges
+    match: {merchant: "(?i)cineplex"}
+
+  - id: online
+    category: sonstiges.online
+    match: {merchant: "(?i)amazon\\.de"}
+
+  - id: datensicherung
+    category: gebuehren.datensicherung
+    match: {merchant: "(?i)backblaze|google one"}
+
+  - id: tierfutter
+    category: haustier.futter
+    match: {merchant: "(?i)fressnapf"}
+
+  - id: skipass
+    category: sparen.urlaub
+    match: {merchant: "(?i)bergbahnen"}
+
+  - id: post
+    category: gebuehren.sonstiges
+    match: {merchant: "(?i)deutsche post"}

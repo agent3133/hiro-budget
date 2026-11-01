@@ -1,0 +1,40 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+
+# Personal financial data - never commit
+input/
+data/
+*.db
+*.db-journal
+*.joblib
+
+# Generated demo database, UI state and backups (demo/generate.py)
+demo/data/
+demo/input/
+
+# Local configuration (created from src/hiro_budget/templates/ on first run)
+config/config.yaml
+config/categories.yaml
+config/rules.yaml
+config/csv_formats.yaml
+config/csv_formats.yaml.migrated*
+# user plugins (may hold personal formats)
+config/plugins/
+
+# Claude Code (worktrees of subagents, local settings)
+.claude/
+
+# local list of real values that must never be published (scripts/privacy_check.py)
+.privacy-denylist

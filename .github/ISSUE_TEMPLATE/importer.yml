@@ -1,0 +1,38 @@
+name: Importer for my bank or service
+description: Ask for (or offer) support of your bank's statements or export
+labels: [importer]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! **Never attach real statements or screenshots of them.** A CSV export can
+        often be supported by a small format file you can write yourself:
+        see docs/csv-import.en.md.
+  - type: input
+    id: bank
+    attributes:
+      label: Bank or service, and the document
+      placeholder: e.g. Musterbank, monthly statement as PDF / Umsätze as CSV
+    validations:
+      required: true
+  - type: dropdown
+    id: format
+    attributes:
+      label: File type
+      options: [CSV, PDF, other]
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Anonymised sample
+      description: |
+        CSV: the header line and 3–5 rows with names, IBANs and purposes replaced.
+        PDF: the output of `hiro-budget dump-pdf statement.pdf --mask`, names replaced by hand.
+      render: text
+  - type: checkboxes
+    id: help
+    attributes:
+      label: Contribution
+      options:
+        - label: I would like to write the format or plugin myself (with guidance)

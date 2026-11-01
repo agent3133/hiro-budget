@@ -1,0 +1,7 @@
+name: ing_loan_pdf
+version: 1.0.0
+api: 1
+description: ING Baufinanzierung yearly statement as PDF (sets the loan balance)
+requires: [ing_common]
+importers:
+  - {module: importer, class: IngLoanPdfImporter}

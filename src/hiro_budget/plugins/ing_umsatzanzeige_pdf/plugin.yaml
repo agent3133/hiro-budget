@@ -1,0 +1,7 @@
+name: ing_umsatzanzeige_pdf
+version: 1.0.0
+api: 1
+description: ING Umsatzanzeige (booking list from online banking) as PDF
+requires: [ing_common]
+importers:
+  - {module: importer, class: IngUmsatzanzeigePdfImporter}

@@ -1,0 +1,7 @@
+name: ing_common
+version: 1.0.0
+api: 1
+description: ING statement layout and card texts, shared by the ING importers
+enrichers:
+  # merchant and purchase date from ING card texts (FinTS, CSV formats)
+  - {bank_codes: ['50010517'], institution: ING, function: card_texts:enrich}

@@ -1,0 +1,27 @@
+name: PayPal
+institution: PayPal
+kind: wallet
+detect:
+  header_has: [Transaktionscode, Zugehöriger Transaktionscode, Auswirkung auf Guthaben]
+account:
+  # the own account (kind: wallet) whose email is this address
+  email_column: Absender E-Mail-Adresse
+columns:
+  booking_date: Datum
+  counterparty: Name
+  booking_type: Typ
+  purpose: [Artikelbezeichnung, Betreff, Hinweis]
+  amount: Netto
+  balance: Guthaben
+  id: Transaktionscode
+skip:
+  - {column: Status, equals: Ausstehend}
+funding:
+  rows:
+    column: Typ
+    in:
+      - Allgemeine Gutschrift auf Kreditkarte
+      - Allgemeine Abbuchung von Kreditkarte
+      - Bankgutschrift auf PayPal-Konto
+  linked_by: Zugehöriger Transaktionscode
+  bank_match: (?i)paypal
