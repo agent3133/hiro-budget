@@ -2548,13 +2548,13 @@ To restore, close the app and copy the files back.</translation>
     </message>
     <message>
         <location filename="../gui/main_window.py" line="393" />
-        <source>&amp;Obsidian</source>
-        <translation>&amp;Obsidian</translation>
+        <source>&amp;Rosé Pine</source>
+        <translation>&amp;Rosé Pine</translation>
     </message>
     <message>
         <location filename="../gui/main_window.py" line="394" />
-        <source>Obsidian d&amp;ark</source>
-        <translation>Obsidian d&amp;ark</translation>
+        <source>Rosé Pine d&amp;ark</source>
+        <translation>Rosé Pine d&amp;ark</translation>
     </message>
     <message>
         <location filename="../gui/main_window.py" line="403" />

@@ -185,7 +185,7 @@ def test_expense_groups_in_the_budget_colours(qtbot, flow_app, monkeypatch) -> N
     from hiro_budget.gui.budget_view import CHIP_ROLE, GROUP_ROLE, BudgetView
     from hiro_budget.gui.report_pages import CashFlowReport
 
-    monkeypatch.setattr(theme, "_active", "obsidian")  # the theme with group colours
+    monkeypatch.setattr(theme, "_active", "rose_pine")  # the theme with group colours
     page = CashFlowReport(flow_app)
     qtbot.addWidget(page)
     page.refresh(*APRIL, None)

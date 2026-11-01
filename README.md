@@ -152,7 +152,7 @@ uv run hiro-budget --config-dir other/config  # use another configuration
 
 | File | Purpose |
 |------|---------|
-| `config/config.yaml` | database path, UI language, look (`theme`: system, light, dark or the warm "obsidian" design (also as "obsidian_dark"), set in the bundled Inter font, SIL Open Font License: `gui/fonts/`), own accounts (transfer detection), mortgage split, ML settings |
+| `config/config.yaml` | database path, UI language, look (`theme`: system, light, dark or the warm "rose_pine" design (also as "rose_pine_dark"), set in the bundled Inter font, SIL Open Font License: `gui/fonts/`), own accounts (transfer detection), mortgage split, ML settings |
 | `config/categories.yaml` | category groups and categories; `income: true` marks income groups |
 | `config/rules.yaml` | categorization rules, first match wins |
 

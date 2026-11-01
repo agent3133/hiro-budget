@@ -173,7 +173,7 @@ class PluginsConfig(BaseModel):
 class AppConfig(BaseModel):
     database: DatabaseConfig = DatabaseConfig()
     language: Literal["de", "en"] = "de"
-    theme: Literal["system", "light", "dark", "obsidian", "obsidian_dark"] = "system"  # look
+    theme: Literal["system", "light", "dark", "rose_pine", "rose_pine_dark"] = "system"  # look
     logging: LoggingConfig = LoggingConfig()
     # where new statements are saved; PDFs in it not imported yet are offered for import
     import_folder: str = "input"
@@ -185,6 +185,12 @@ class AppConfig(BaseModel):
     backup: BackupConfig = BackupConfig()
     fints: FintsConfig = FintsConfig()
     plugins: PluginsConfig = PluginsConfig()
+
+    @field_validator("theme", mode="before")
+    @classmethod
+    def _former_theme_names(cls, value: Any) -> Any:
+        # "Rosé Pine" was called "Obsidian" up to 0.1.0
+        return {"obsidian": "rose_pine", "obsidian_dark": "rose_pine_dark"}.get(value, value)
 
     @model_validator(mode="after")
     def _unique_account_names(self) -> AppConfig:

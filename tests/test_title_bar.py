@@ -127,13 +127,13 @@ def test_import_button_offers_the_new_statements(window, statement_pdf, monkeypa
 
 def test_theme_button_switches_light_and_dark(window) -> None:
     try:
-        window.set_theme("obsidian")
+        window.set_theme("rose_pine")
         window.theme_button.click()
-        assert window.app.settings.app.theme == "obsidian_dark"
-        assert window._theme_actions["obsidian_dark"].isChecked()
+        assert window.app.settings.app.theme == "rose_pine_dark"
+        assert window._theme_actions["rose_pine_dark"].isChecked()
         assert "light" in window.theme_button.toolTip()
         window.theme_button.click()
-        assert window.app.settings.app.theme == "obsidian"
+        assert window.app.settings.app.theme == "rose_pine"
     finally:
         window.set_theme("light")
     assert theme.tokens() is None

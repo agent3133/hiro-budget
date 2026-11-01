@@ -67,7 +67,7 @@ CAT_ROLE = Qt.ItemDataRole.UserRole + 1  # category id (category rows)
 ENV_ROLE = Qt.ItemDataRole.UserRole + 2  # Envelope of rows that hold money
 GROUP_ROLE = Qt.ItemDataRole.UserRole + 3  # group key (group rows)
 STATE_ROLE = Qt.ItemDataRole.UserRole + 4  # colour key of the Available column
-CHIP_ROLE = Qt.ItemDataRole.UserRole + 5  # chip colour behind a group name (Obsidian)
+CHIP_ROLE = Qt.ItemDataRole.UserRole + 5  # chip colour behind a group name (Rosé Pine)
 
 ALL, OVERSPENT, UNDERFUNDED = "all", "overspent", "underfunded"
 
@@ -119,7 +119,7 @@ class AssignedDelegate(QStyledItemDelegate):
         self.view = view
 
     def paint(self, painter, option, index):
-        """Obsidian: the Available amount as a rounded pill, group names on a chip."""
+        """Rosé Pine: the Available amount as a rounded pill, group names on a chip."""
         t = theme.tokens()
         state = index.data(STATE_ROLE)
         chip = index.data(CHIP_ROLE)

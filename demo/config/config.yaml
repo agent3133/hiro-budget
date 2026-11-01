@@ -6,7 +6,7 @@ database:
   path: data/demo.db
 
 language: de
-theme: obsidian
+theme: rose_pine
 
 logging:
   level: INFO

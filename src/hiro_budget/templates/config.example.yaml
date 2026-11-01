@@ -7,7 +7,7 @@ database:
 # UI language: de | en
 language: de
 
-# Look: system (light/dark as set in Windows) | light | dark | obsidian (warm design) | obsidian_dark
+# Look: system (light/dark as set in Windows) | light | dark | rose_pine (warm design) | rose_pine_dark
 theme: system
 
 logging:

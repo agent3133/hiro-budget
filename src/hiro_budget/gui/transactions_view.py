@@ -83,7 +83,7 @@ class CategoryDelegate(QStyledItemDelegate):
         self.view = view
 
     def paint(self, painter, option, index):
-        """Obsidian: an uncategorized booking shows a dashed "+ Category" pill."""
+        """Rosé Pine: an uncategorized booking shows a dashed "+ Category" pill."""
         t = theme.tokens()
         r: TransactionRow | None = index.data(ROW_ROLE)
         if t is None or r is None or not r.is_uncategorized:

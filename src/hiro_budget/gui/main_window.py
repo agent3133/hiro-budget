@@ -390,8 +390,8 @@ class MainWindow(QMainWindow):
             ("system", self.tr("As in &Windows")),
             ("light", self.tr("&Light")),
             ("dark", self.tr("&Dark")),
-            ("obsidian", self.tr("&Obsidian")),
-            ("obsidian_dark", self.tr("Obsidian d&ark")),
+            ("rose_pine", self.tr("&Rosé Pine")),
+            ("rose_pine_dark", self.tr("Rosé Pine d&ark")),
         ):
             act = QAction(label, self, checkable=True)
             act.setChecked(self.app.settings.app.theme == code)
@@ -687,10 +687,10 @@ class MainWindow(QMainWindow):
         return self.palette().window().color().lightness() < 128
 
     def toggle_theme(self) -> None:
-        """Light <-> dark, keeping the design (Obsidian or Windows)."""
+        """Light <-> dark, keeping the design (Rosé Pine or Windows)."""
         pairs = {
-            "obsidian": "obsidian_dark",
-            "obsidian_dark": "obsidian",
+            "rose_pine": "rose_pine_dark",
+            "rose_pine_dark": "rose_pine",
             "light": "dark",
             "dark": "light",
         }

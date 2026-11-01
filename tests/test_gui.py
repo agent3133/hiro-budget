@@ -233,7 +233,16 @@ def test_switch_light_and_dark_mode(window, config_dir, monkeypatch) -> None:
     assert load_settings(config_dir).app.theme == "system"
 
 
-def test_obsidian_theme_and_back(window, config_dir) -> None:
+@pytest.mark.parametrize(
+    ("saved", "loaded"), [("obsidian", "rose_pine"), ("obsidian_dark", "rose_pine_dark")]
+)
+def test_former_theme_names_still_load(saved, loaded) -> None:
+    from hiro_budget.config import AppConfig
+
+    assert AppConfig(theme=saved).theme == loaded  # "Rosé Pine" was called "Obsidian"
+
+
+def test_rose_pine_theme_and_back(window, config_dir) -> None:
     from PySide6.QtWidgets import QApplication
 
     from hiro_budget.config import load_settings
@@ -242,17 +251,17 @@ def test_obsidian_theme_and_back(window, config_dir) -> None:
     from hiro_budget.gui.navigation import TileDelegate
 
     qapp = QApplication.instance()
-    window.set_theme("obsidian")
+    window.set_theme("rose_pine")
     try:
-        assert load_settings(config_dir).app.theme == "obsidian"
-        assert theme.tokens() is theme.OBSIDIAN
+        assert load_settings(config_dir).app.theme == "rose_pine"
+        assert theme.tokens() is theme.ROSE_PINE
         from PySide6.QtGui import QFontInfo
 
         assert QFontInfo(qapp.font()).family() == "Inter"  # bundled with the app
         assert "{accent}" not in qapp.styleSheet()  # all tokens filled in
-        assert theme.OBSIDIAN["accent"].lower() in qapp.styleSheet().lower()
+        assert theme.ROSE_PINE["accent"].lower() in qapp.styleSheet().lower()
         assert isinstance(window.tabs.list.itemDelegate(), TileDelegate)
-        assert amount_color(-1).name().lower() == theme.OBSIDIAN["neg_text"].lower()
+        assert amount_color(-1).name().lower() == theme.ROSE_PINE["neg_text"].lower()
         window.tabs.setCurrentWidget(window.reports)
         window.tabs.setCurrentWidget(window.budget)  # pages draw with the theme's colours
         window.tabs.list.grab()
@@ -394,19 +403,19 @@ def test_booking_card(window) -> None:
     assert card.rule_button.isHidden() and card.category.isHidden()
 
 
-def test_obsidian_dark(window, config_dir) -> None:
+def test_rose_pine_dark(window, config_dir) -> None:
     from PySide6.QtWidgets import QApplication
 
     from hiro_budget.config import load_settings
     from hiro_budget.gui import theme
     from hiro_budget.gui.common import is_dark
 
-    window.set_theme("obsidian_dark")
+    window.set_theme("rose_pine_dark")
     try:
-        assert load_settings(config_dir).app.theme == "obsidian_dark"
-        assert theme.tokens() is theme.OBSIDIAN_DARK and is_dark()
+        assert load_settings(config_dir).app.theme == "rose_pine_dark"
+        assert theme.tokens() is theme.ROSE_PINE_DARK and is_dark()
         style = QApplication.instance().styleSheet()
-        assert "{" + "disabled}" not in style and theme.OBSIDIAN_DARK["accent"] in style
+        assert "{" + "disabled}" not in style and theme.ROSE_PINE_DARK["accent"] in style
         for page in (window.overview, window.budget, window.transactions, window.reports):
             window.tabs.setCurrentWidget(page)
             page.grab()

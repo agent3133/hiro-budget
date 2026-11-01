@@ -121,7 +121,7 @@ QPushButton#sidebarMenu:hover { background: rgba(128, 128, 128, 0.12); }
 QPushButton#sidebarMenu:pressed { background: rgba(128, 128, 128, 0.20); }
 """
 
-# Obsidian: the list is a panel; TileDelegate draws the pages as pastel tiles
+# Rosé Pine: the list is a panel; TileDelegate draws the pages as pastel tiles
 OBSIDIAN_STYLE = """
 QWidget#sidebar {
     background: {panel};
@@ -153,7 +153,7 @@ QPushButton#sidebarMenu:pressed { background: {border}; }
 
 
 class TileDelegate(QStyledItemDelegate):
-    """Obsidian: each page a rounded tile in its pastel colour, the current one with an
+    """Rosé Pine: each page a rounded tile in its pastel colour, the current one with an
     accent frame and bold label."""
 
     def sizeHint(self, option, index):
@@ -574,7 +574,7 @@ class NavigationView(QWidget):
         self._update_toggle()
 
     def _paint_toggle(self) -> None:
-        """The panel icon in the theme's muted ink (Obsidian) or the button text colour."""
+        """The panel icon in the theme's muted ink (Rosé Pine) or the button text colour."""
         t = theme.tokens()
         color = t["muted"] if t else self.toggle.palette().buttonText().color()
         self.toggle.setIcon(sidebar_icon(color))

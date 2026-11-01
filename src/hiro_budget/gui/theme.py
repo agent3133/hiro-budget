@@ -4,11 +4,12 @@
   setting, the accent colour follows Windows. The stylesheet only covers group boxes
   (rounded cards with the title above) and tab bars (accent-coloured bar under the
   selected tab); everything else is drawn by the native style.
-- "obsidian": the warm "Obsidian" design (cream ground, aubergine ink, violet accent,
-  pastel page colours) on the Fusion style, which follows a custom palette; buttons,
+- "rose_pine": the warm "Rosé Pine" design (cream ground, aubergine ink, violet accent,
+  pastel page colours; after the Rosé Pine flavour of Obsidian's AnuPpuccin theme, its
+  layout after the Obsidian app) on the Fusion style, which follows a custom palette; buttons,
   fields and tables get rounded shapes from a stylesheet. Views that draw their own
   colours (budget pills, charts, the sidebar) ask ``tokens()``.
-- "obsidian_dark": the same design on dark grounds (its own token set).
+- "rose_pine_dark": the same design on dark grounds (its own token set).
 """
 
 from __future__ import annotations
@@ -34,12 +35,12 @@ SCHEMES = {
     "system": Qt.ColorScheme.Unknown,  # follow Windows
     "light": Qt.ColorScheme.Light,
     "dark": Qt.ColorScheme.Dark,
-    "obsidian": Qt.ColorScheme.Light,
-    "obsidian_dark": Qt.ColorScheme.Dark,
+    "rose_pine": Qt.ColorScheme.Light,
+    "rose_pine_dark": Qt.ColorScheme.Dark,
 }
 
-# The "Obsidian" design (Claude Design canvas "Familien-Finanzanalyse – Obsidian Theme")
-OBSIDIAN = {
+# The "Rosé Pine" design (first drawn as the "Obsidian Theme" canvas)
+ROSE_PINE = {
     "window": "#F1E9DF",  # page ground
     "panel": "#E8DFD3",  # sidebar, buttons, table headers
     "card": "#EDE4D9",
@@ -73,9 +74,9 @@ OBSIDIAN = {
     "pages": ["#E4B9B4", "#CEC1D4", "#EFCB9E", "#ADC4C3", "#9FB3B6"],
 }
 
-# Obsidian at night: the same aubergine character on dark grounds, light ink, a lighter
+# Rosé Pine at night: the same aubergine character on dark grounds, light ink, a lighter
 # violet accent and muted versions of the pastel page colours.
-OBSIDIAN_DARK = {
+ROSE_PINE_DARK = {
     "window": "#1E1B25",
     "panel": "#26222E",
     "card": "#2A2633",
@@ -312,7 +313,7 @@ def active() -> str:
 
 def tokens() -> dict | None:
     """Colours of the custom theme in use, None for the native look."""
-    return {"obsidian": OBSIDIAN, "obsidian_dark": OBSIDIAN_DARK}.get(_active)
+    return {"rose_pine": ROSE_PINE, "rose_pine_dark": ROSE_PINE_DARK}.get(_active)
 
 
 def _palette(t: dict) -> QPalette:
@@ -417,7 +418,7 @@ class _Watcher(QObject):
             obj.setItemDelegate(QStyledItemDelegate(obj))
         elif kind == QEvent.Type.Polish and isinstance(obj, (QSpinBox, QDoubleSpinBox)):
             # the stylesheet's padding does not reach the text of number fields: the
-            # same inset as in the other fields (Obsidian), none in the Windows look
+            # same inset as in the other fields (Rosé Pine), none in the Windows look
             obj.lineEdit().setTextMargins(8 if tokens() else 0, 0, 0, 0)
         return False
 

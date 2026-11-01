@@ -167,7 +167,7 @@ class AccountDraft:
 
 
 class TypeChipDelegate(QStyledItemDelegate):
-    """Obsidian: the type of an account as a chip (positions keep their ISIN as text)."""
+    """Rosé Pine: the type of an account as a chip (positions keep their ISIN as text)."""
 
     def paint(self, painter, option, index):
         t = theme.tokens()
