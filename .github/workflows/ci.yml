@@ -14,8 +14,8 @@ jobs:
         run: uv sync --locked
       - name: Lint
         run: |
-          uv run ruff check src tests packaging scripts demo
-          uv run ruff format --check src tests packaging scripts demo
+          uv run ruff check src tests packaging demo
+          uv run ruff format --check src tests packaging demo
       - name: Type check (services, importers, db, config; see [tool.mypy])
         run: uv run mypy
       - name: Tests (GUI tests run headless)

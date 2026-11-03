@@ -7,3 +7,4 @@ CLAUDE.md export-ignore
 .githooks export-ignore
 scripts/* export-ignore
 tests/test_verify_publish.py export-ignore
+tests/test_hooks.py export-ignore
