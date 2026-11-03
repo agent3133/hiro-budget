@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QHeaderView,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -42,9 +43,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from hiro_budget.gui import theme
+from hiro_budget.gui import shortcuts, theme
 from hiro_budget.gui.app_icon import ring_pixmap
-from hiro_budget.gui.common import amount_color, money, with_keys
+from hiro_budget.gui.common import amount_color, money
 from hiro_budget.gui.widgets import caption
 
 GLYPH_ROLE = Qt.ItemDataRole.UserRole + 1
@@ -263,6 +264,11 @@ def refresh_glyphs(root: QWidget) -> None:
         glyph = button.property("glyph")
         if glyph:
             button.setIcon(glyph_icon(glyph, button.palette().buttonText().color(), 16))
+    for edit in root.findChildren(QLineEdit):  # icons inside fields (regex help)
+        for action in edit.actions():
+            glyph = action.property("glyph")
+            if glyph:
+                action.setIcon(glyph_icon(glyph, edit.palette().placeholderText().color(), 16))
 
 
 class NavigationView(QWidget):
@@ -581,7 +587,7 @@ class NavigationView(QWidget):
 
     def _update_toggle(self) -> None:
         text = self.tr("Expand sidebar") if self.compact else self.tr("Collapse sidebar")
-        self.toggle.setToolTip(with_keys(text, "Ctrl+B"))
+        self.toggle.setToolTip(shortcuts.tip(text, "sidebar"))
         self.toggle.setAccessibleName(text)
 
     def changeEvent(self, event) -> None:

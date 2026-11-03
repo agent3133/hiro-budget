@@ -60,14 +60,15 @@ def test_back_and_forward_restore_the_place(window) -> None:
     assert window.tabs.currentWidget() is window.budget
 
 
-def test_alt_arrows_change_the_month_on_the_budget_page(window) -> None:
+def test_alt_arrows_are_back_and_forward_on_the_budget_page_too(window) -> None:
+    """The budget's months moved to Alt+PgUp / PgDn (#66); Alt+arrows are history."""
+    window.tabs.setCurrentWidget(window.transactions)
     window.tabs.setCurrentWidget(window.budget)
     window.budget.go("2026-03")
+    window._alt_arrow(-1)
+    assert window.tabs.currentWidget() is window.transactions
+    assert window.budget.month == "2026-03"
     window._alt_arrow(1)
-    assert window.budget.month == "2026-04"
-    assert window.tabs.currentWidget() is window.budget
-    window.tabs.setCurrentWidget(window.transactions)
-    window._alt_arrow(-1)  # elsewhere: back
     assert window.tabs.currentWidget() is window.budget
 
 
@@ -130,7 +131,7 @@ def test_theme_button_switches_light_and_dark(window) -> None:
         window.set_theme("rose_pine")
         window.theme_button.click()
         assert window.app.settings.app.theme == "rose_pine_dark"
-        assert window._theme_actions["rose_pine_dark"].isChecked()
+        assert window._main_menus.theme_actions["rose_pine_dark"].isChecked()
         assert "light" in window.theme_button.toolTip()
         window.theme_button.click()
         assert window.app.settings.app.theme == "rose_pine"
@@ -187,3 +188,12 @@ def test_search_box_keyboard(qtbot, window) -> None:
     qtbot.keyClick(box, Qt.Key.Key_Return)
     assert window.tabs.currentWidget() is window.reports
     assert box.text() == "" and not box.results.isVisible()
+
+
+def test_search_bookings_by_amount(window) -> None:
+    # #43: "17,99" found nothing; an amount query now also matches the amount
+    row = next(r for r in window.transactions.model.rows() if r.amount_cents % 100)
+    euros, cents = divmod(abs(row.amount_cents), 100)
+    query = f"{euros},{cents:02d}"
+    hits = [h for h in window._search(query) if h.section == "Bookings"]
+    assert any(row.payee in h.text or row.purpose in h.text for h in hits)

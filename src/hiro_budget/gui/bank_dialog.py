@@ -1,9 +1,12 @@
-"""Settings → Bank access: bank logins (FinTS), their accounts and where they go.
+"""Settings → Bank access: bank logins, their accounts and where they go.
 
-Per login: bank, login ID and the bank's accounts, each with the app account its bookings
-go to (an existing one or a new one) and the first day fetched. "Test connection" asks for
-the PIN, logs in and lists the accounts the bank offers. Saved to config.yaml; the PIN is
-never stored.
+Works with any connector plugin (#82): the form of a login is built from the connector's
+settings model (``login_model``: e.g. bank code, server, login ID for FinTS), the settings
+shared by its logins from ``options_model`` (the FinTS product ID). Per login: name,
+settings and the bank's accounts, each with the app account its bookings go to (an existing
+one or a new one) and the first day fetched. "Test connection" asks for the secret (PIN),
+logs in and lists the accounts the bank offers. Saved to config.yaml; the secret is never
+stored.
 """
 
 from __future__ import annotations
@@ -12,7 +15,8 @@ import logging
 from dataclasses import dataclass
 from datetime import date
 
-from PySide6.QtCore import QCoreApplication, QDate, Qt
+from pydantic import BaseModel, ValidationError
+from PySide6.QtCore import QCoreApplication, QDate, QObject, Qt, Signal
 from PySide6.QtWidgets import (
     QComboBox,
     QDateEdit,
@@ -30,21 +34,27 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from sqlalchemy import select
 
 from hiro_budget.app import App
-from hiro_budget.config import BankAccountLink, BankLogin, FintsConfig
-from hiro_budget.db.models import Account
-from hiro_budget.gui.bank_fetch import BankWorker, ask_pin, ask_tan
-from hiro_budget.gui.common import fit_to_screen, flat_table, show_error
-from hiro_budget.services import bank, config_edit
-from hiro_budget.services.bank import fetch
+from hiro_budget.config import BankAccessConfig, BankAccountLink, BankLogin
+from hiro_budget.gui.bank_fetch import BankWorker, ask_secret, ask_tan, secret_label
+from hiro_budget.gui.common import fit_to_screen, flat_table, format_iban, show_error
+from hiro_budget.importers.connectors import (
+    Cancelled,
+    Connector,
+    LoginError,
+    Offline,
+    RemoteAccount,
+    error_message,
+    suggestions,
+    text,
+)
+from hiro_budget.services import config_edit, connections, lookups
 
 log = logging.getLogger(__name__)
 
-# FinTS servers of banks the app knows (bank code -> URL); others are typed in
-SERVERS = {"50010517": "https://fints.ing.de/fints/"}
 NEW = "\x00new"  # combo data: create a new app account
+DEFAULT_NAME = "Bank"  # a new login's name until the user (or the connector) names it
 NO_DATE = QDate(2000, 1, 1)  # the date edit's minimum: "as far back as possible"
 
 
@@ -72,18 +82,102 @@ def _pydate(q: QDate) -> date | None:
     return None if q == NO_DATE else date(q.year(), q.month(), q.day())
 
 
+def _default(model: type[BaseModel], name: str) -> str:
+    info = model.model_fields[name]
+    if info.is_required() or info.default is None:
+        return ""
+    return str(info.default)
+
+
+class SettingsForm(QObject):
+    """Text fields for the fields of a connector's settings model (titles and
+    descriptions translated by the connector), as rows of ``form`` from row ``row`` on (so
+    they line up with the rows around them). ``hints``: descriptions as labels below the
+    fields instead of placeholders. ``name_suggested``: the connector's name for the login
+    (a known bank code)."""
+
+    name_suggested = Signal(str)
+
+    def __init__(
+        self,
+        connector: Connector,
+        model: type[BaseModel],
+        language: str,
+        form: QFormLayout,
+        row: int,
+        hints: bool = False,
+    ) -> None:
+        super().__init__(form)
+        self.connector, self.model, self.form = connector, model, form
+        self.edits: dict[str, QLineEdit] = {}
+        self.hints: dict[str, QLabel] = {}
+        for name, info in model.model_fields.items():
+            edit = QLineEdit()
+            description = text(connector, info.description, language) if info.description else ""
+            if description and not hints:
+                edit.setPlaceholderText(description)
+            edit.textEdited.connect(self._edited)
+            form.insertRow(row, text(connector, info.title or name, language), edit)
+            row += 1
+            self.edits[name] = edit
+            if description and hints:
+                hint = QLabel(description)
+                hint.setWordWrap(True)
+                form.insertRow(row, "", hint)
+                row += 1
+                self.hints[name] = hint
+
+    def remove(self) -> None:
+        """Take the rows out of the form (their widgets are deleted)."""
+        for widget in [*self.edits.values(), *self.hints.values()]:
+            self.form.removeRow(widget)
+        self.edits, self.hints = {}, {}
+        self.deleteLater()
+
+    def set_values(self, values: dict) -> None:
+        for name, edit in self.edits.items():
+            value = values.get(name)
+            edit.setText(_default(self.model, name) if value is None else str(value))
+
+    def values(self) -> dict[str, str]:
+        """The fields that are filled in."""
+        return {n: e.text().strip() for n, e in self.edits.items() if e.text().strip()}
+
+    def is_empty(self) -> bool:
+        """No required field is filled in."""
+        required = [n for n, info in self.model.model_fields.items() if info.is_required()]
+        return not any(self.edits[n].text().strip() for n in required)
+
+    def _edited(self) -> None:
+        self.apply_suggestions(self.sender())
+
+    def apply_suggestions(self, typed: object = None) -> None:
+        for name, value in suggestions(self.connector, self.values()).items():
+            if name in self.edits and self.edits[name] is not typed:
+                self.edits[name].setText(value)
+            elif name == "name":
+                self.name_suggested.emit(value)
+
+
 class BankAccessDialog(QDialog):
     def __init__(self, app: App, parent=None) -> None:
         super().__init__(parent)
         self.app = app
+        self.language = app.settings.app.language
         self.setWindowTitle(self.tr("Bank access"))
         fit_to_screen(self, 900, 560)
-        self.logins: list[BankLogin] = [
-            lg.model_copy(deep=True) for lg in app.settings.app.fints.logins
-        ]
+        access = app.settings.app.bank_access
+        self.logins: list[BankLogin] = [lg.model_copy(deep=True) for lg in access.logins]
+        self.options: dict[str, dict] = {k: dict(v) for k, v in access.connectors.items()}
+        self.connectors = {c.name: c for c in connections.connectors(app.settings)}
         self._current = -1
+        self._suggested_name = ""
+        self.fields: SettingsForm | None = None
+        self.option_fields: SettingsForm | None = None
         with app.session() as s:
-            self.accounts = {a.name: (a.id, a.kind.value) for a in s.scalars(select(Account))}
+            self.accounts = {
+                a.name: (a.id, a.kind.value) for a in lookups.accounts(s, by_name=False)
+            }
 
         self.login_list = QComboBox()
         self.login_list.setMinimumContentsLength(12)
@@ -100,19 +194,20 @@ class BankAccessDialog(QDialog):
         logins.addStretch(1)
 
         self.name = QLineEdit()
-        self.bank_code = QLineEdit()
-        self.bank_code.textEdited.connect(self._bank_code_edited)
-        self.server = QLineEdit()
-        self.login_id = QLineEdit()
-        self.login_id.setPlaceholderText(self.tr("e.g. the access number of your online banking"))
-        form = QFormLayout()
-        form.addRow(self.tr("Name"), self.name)
-        form.addRow(self.tr("Bank code"), self.bank_code)
-        form.addRow(self.tr("FinTS server"), self.server)
-        form.addRow(self.tr("Login ID"), self.login_id)
-        pin_note = QLabel(self.tr("The PIN is asked for at every fetch and is not saved."))
-        pin_note.setWordWrap(True)
-        form.addRow(self.tr("PIN"), pin_note)
+        self.connector_choice = QComboBox()
+        for c in self.connectors.values():
+            self.connector_choice.addItem(c.title, c.name)
+        self.connector_choice.currentIndexChanged.connect(self._connector_chosen)
+        # one form: name, connection, the connector's fields (inserted), the secret
+        self.head = head = QFormLayout()
+        head.addRow(self.tr("Name"), self.name)
+        head.addRow(self.tr("Connection"), self.connector_choice)
+        # only a choice with more than one connector plugin
+        head.setRowVisible(self.connector_choice, len(self.connectors) > 1)
+        self.secret_label = QLabel()
+        self.secret_note = QLabel(self.tr("Asked for at every fetch, never saved."))
+        self.secret_note.setWordWrap(True)
+        head.addRow(self.secret_label, self.secret_note)
 
         self.test_button = QPushButton(self.tr("Test connection…"))
         self.test_button.setToolTip(self.tr("Log in and list the accounts the bank offers"))
@@ -149,20 +244,12 @@ class BankAccessDialog(QDialog):
         self.detail = QWidget()
         right = QVBoxLayout(self.detail)
         right.setContentsMargins(0, 0, 0, 0)
-        right.addLayout(form)
+        right.addLayout(head)
         right.addLayout(test)
         right.addWidget(QLabel(self.tr("Accounts")))
         right.addWidget(self.table, 1)
         right.addWidget(accounts_note)
-
-        self.product_id = QLineEdit(app.settings.app.fints.product_id or "")
-        self.product_id.setPlaceholderText(self.tr("not registered yet"))
-        self.product_id.textChanged.connect(self._update_product_hint)
-        self.product_hint = QLabel()
-        self.product_hint.setWordWrap(True)
-        product = QFormLayout()
-        product.addRow(self.tr("Product ID"), self.product_id)
-        product.addRow("", self.product_hint)
+        self.options_form = QFormLayout()
 
         box = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Save | QDialogButtonBox.StandardButton.Cancel
@@ -172,25 +259,85 @@ class BankAccessDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addLayout(logins)
         layout.addWidget(self.detail, 1)
-        layout.addLayout(product)
+        layout.addLayout(self.options_form)
         layout.addWidget(box)
 
         for login in self.logins:
             self.login_list.addItem(login.name)
-        self._update_product_hint()
         if self.logins:
             self._select(0)
         else:
             self._add_login()
 
+    # -- the connector's forms --
+
+    def _connector(self, login: BankLogin) -> Connector | None:
+        return self.connectors.get(login.connector)
+
+    def _show_forms(self, login: BankLogin) -> None:
+        """The login's settings form and its connector's options below."""
+        connector = self._connector(login)
+        if self.fields is not None and (self.fields.connector is not connector):
+            self._store_options()
+            for form in (self.fields, self.option_fields):
+                if form is not None:
+                    form.remove()
+            self.fields = self.option_fields = None
+        if connector is None:
+            self.secret_label.setText("")
+            self.test_status.setText(
+                "⚠ "
+                + self.tr("No plugin provides the connection “%1”.").replace("%1", login.connector)
+            )
+            return
+        if self.fields is None:
+            # after name and connection, before the secret
+            self.fields = SettingsForm(
+                connector, connector.login_model, self.language, self.head, 2
+            )
+            self.fields.name_suggested.connect(self._name_suggested)
+            if connector.options_model is not None:
+                self.option_fields = SettingsForm(
+                    connector, connector.options_model, self.language, self.options_form, 0, True
+                )
+                self.option_fields.set_values(self.options.get(connector.name, {}))
+        self.fields.set_values(login.settings)
+        label = secret_label(self.app.settings, login)
+        self.secret_label.setText(label)
+        self.secret_label.setVisible(bool(label))
+        self.secret_note.setVisible(bool(label))
+
+    def _name_suggested(self, name: str) -> None:
+        """The bank's name for a login the user has not named yet."""
+        if self.name.text().strip() in ("", DEFAULT_NAME, self._suggested_name):
+            self.name.setText(name)
+            self._suggested_name = name
+
+    def _store_options(self) -> None:
+        if self.option_fields is not None:
+            self.options[self.option_fields.connector.name] = self.option_fields.values()
+
+    def _connector_chosen(self) -> None:
+        if not 0 <= self._current < len(self.logins):
+            return
+        login = self.logins[self._current]
+        name = self.connector_choice.currentData()
+        if name and name != login.connector:
+            login.connector, login.settings = name, {}
+            self._show_forms(login)
+
     # -- logins --
 
     def _add_login(self) -> None:
         self._store()
-        login = BankLogin(login_id="")
+        first = next(iter(self.connectors), "fints")
+        login = BankLogin(connector=first, name=DEFAULT_NAME)
         self.logins.append(login)
         self.login_list.addItem(login.name)
         self.login_list.setCurrentIndex(len(self.logins) - 1)
+        if self.fields is not None:  # the defaults may name a bank (FinTS: ING)
+            self.fields.apply_suggestions()
+            self._store()
 
     def _remove_login(self) -> None:
         row = self.login_list.currentIndex()
@@ -219,15 +366,14 @@ class BankAccessDialog(QDialog):
             return
         login = self.logins[row]
         self.name.setText(login.name)
-        self.bank_code.setText(login.bank_code)
-        self.server.setText(login.server)
-        self.login_id.setText(login.login_id)
+        self.connector_choice.blockSignals(True)
+        self.connector_choice.setCurrentIndex(
+            max(self.connector_choice.findData(login.connector), 0)
+        )
+        self.connector_choice.blockSignals(False)
         self.test_status.clear()
+        self._show_forms(login)
         self._fill_table(login.accounts)
-
-    def _bank_code_edited(self, code: str) -> None:
-        if code.strip() in SERVERS:
-            self.server.setText(SERVERS[code.strip()])
 
     def _store(self) -> None:
         """The form back into the selected login."""
@@ -235,9 +381,8 @@ class BankAccessDialog(QDialog):
             return
         login = self.logins[self._current]
         login.name = self.name.text().strip() or "Bank"
-        login.bank_code = self.bank_code.text().strip()
-        login.server = self.server.text().strip()
-        login.login_id = self.login_id.text().strip()
+        if self.fields is not None and self.fields.connector is self._connector(login):
+            login.settings = self.fields.values()
         login.accounts = self._links()
         self.login_list.setItemText(self._current, login.name)
 
@@ -262,7 +407,7 @@ class BankAccessDialog(QDialog):
         r = self.table.rowCount()
         self.table.insertRow(r)
         item = QTableWidgetItem(f"{link.product} ··{link.bank_id[-4:]}")
-        item.setToolTip(link.bank_id)
+        item.setToolTip(format_iban(link.bank_id))
         item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEditable)
         item.setData(Qt.ItemDataRole.UserRole, link)
         self.table.setItem(r, 0, item)
@@ -279,7 +424,7 @@ class BankAccessDialog(QDialog):
         combo.setCurrentIndex(max(index, 0))
         self.table.setCellWidget(r, 2, combo)
 
-        if not fetch.is_fetched(link):
+        if not connections.is_fetched(link):
             none = QTableWidgetItem("—")
             none.setFlags(none.flags() & ~Qt.ItemFlag.ItemIsEditable)
             none.setToolTip(self.tr("Securities accounts: holdings, not bookings (follows later)"))
@@ -298,8 +443,9 @@ class BankAccessDialog(QDialog):
         """Another app account: its cut-over is the day after its last statement."""
         name = combo.currentData()
         account_id = None if name == NEW else self.accounts[name][0]
+        connector = self.logins[self._current].connector
         with self.app.session() as s:
-            edit.setDate(_qdate(fetch.suggested_fetch_from(s, account_id)))
+            edit.setDate(_qdate(connections.suggested_fetch_from(s, account_id, connector)))
 
     def _links(self) -> list[BankAccountLink]:
         links = []
@@ -316,21 +462,56 @@ class BankAccessDialog(QDialog):
 
     # -- connection test --
 
+    def _settings_problem(self, login: BankLogin) -> str | None:
+        """Why the login's settings do not fit its connector (None: they do)."""
+        connector = self._connector(login)
+        if connector is None:
+            return self.tr("No plugin provides the connection “%1”.").replace("%1", login.connector)
+        try:
+            connector.login_model.model_validate(login.settings)
+            if connector.options_model is not None:
+                connector.options_model.model_validate(self.options.get(connector.name, {}))
+        except ValidationError as e:
+            return self._describe(connector, e)
+        return None
+
+    def _describe(self, connector: Connector, error: ValidationError) -> str:
+        """Each wrong field by its label in the form."""
+        models = [connector.login_model, connector.options_model]
+        fields = {n: i for m in models if m is not None for n, i in m.model_fields.items()}
+        lines = []
+        for e in error.errors():
+            name = str(e["loc"][0]) if e["loc"] else ""
+            info = fields.get(name)
+            label = text(connector, info.title or name, self.language) if info else name
+            if e["type"] in ("missing", "string_too_short"):
+                message = self.tr("required")
+            else:  # the connector's own message (a validator), in the app's language
+                message = text(connector, error_message(e), self.language)
+            lines.append(f"{label}: {message}")
+        return "\n".join(lines)
+
     def _test(self) -> None:
         self._store()
+        self._store_options()
         login = self.logins[self._current]
-        if not login.login_id or not login.bank_code or not login.server:
+        problem = self._settings_problem(login)
+        if problem is not None:
             QMessageBox.information(
-                self, self.windowTitle(), self.tr("Please fill in bank code, server and login ID.")
+                self,
+                self.windowTitle(),
+                self.tr("Please check the settings:") + "\n\n" + problem,
             )
             return
-        pin = ask_pin(self, login)
-        if pin is None:
-            return
-        product = self.product_id.text().strip() or None
+        secret = ""
+        if label := secret_label(self.app.settings, login):
+            secret = ask_secret(self, label, login)
+            if secret is None:
+                return
+        settings, options = self.app.settings, self.options.get(login.connector, {})
 
         def job(confirm):
-            with bank.connect(login, pin, product, confirm) as session:
+            with connections.connect(settings, login, secret, confirm, options) as session:
                 return session.accounts()
 
         self.test_button.setEnabled(False)
@@ -349,17 +530,17 @@ class BankAccessDialog(QDialog):
         worker.start()
 
     def _test_failed(self, error: Exception) -> None:
-        if isinstance(error, bank.PinError):
-            text = self.tr("The bank rejected the login ID or PIN.")
-        elif isinstance(error, bank.Offline):
+        if isinstance(error, LoginError):
+            text = self.tr("The bank rejected the login.")
+        elif isinstance(error, Offline):
             text = self.tr("The bank's server is not reachable.")
-        elif isinstance(error, bank.Cancelled):
+        elif isinstance(error, Cancelled):
             text = self.tr("Cancelled.")
         else:
             text = self.tr("Failed: %1").replace("%1", str(error))
         self.test_status.setText("⚠ " + text)
 
-    def _offered(self, login: BankLogin, offered: list[bank.BankAccount]) -> None:
+    def _offered(self, login: BankLogin, offered: list[RemoteAccount]) -> None:
         """Accounts the bank lists: known rows stay as they are, new ones are added with
         the app account of the same IBAN (or a new one) and their suggested cut-over."""
         if self.logins[self._current] is not login:
@@ -373,7 +554,7 @@ class BankAccessDialog(QDialog):
             for a in offered:
                 if a.bank_id in known:
                     continue
-                account = fetch.find_account(s, a)
+                account = connections.find_account(s, a)
                 name = account.name if account is not None else ""
                 log.info(
                     "bank account %s ...%s (%s): app account %s",
@@ -387,7 +568,9 @@ class BankAccessDialog(QDialog):
                     product=a.product,
                     kind=a.kind,
                     account=name or "-",
-                    fetch_from=fetch.suggested_fetch_from(s, account.id if account else None),
+                    fetch_from=connections.suggested_fetch_from(
+                        s, account.id if account else None, login.connector
+                    ),
                 )
                 self._add_row(link, self._new_name(a.product, a.bank_id))
                 added += 1
@@ -405,23 +588,20 @@ class BankAccessDialog(QDialog):
             worker.wait()
         super().done(result)
 
-    # -- product ID, saving --
+    # -- saving --
 
-    def _update_product_hint(self) -> None:
-        if self.product_id.text().strip():
-            self.product_hint.setText(self.tr("Registered product ID of this app."))
-        else:
-            self.product_hint.setText(
-                self.tr(
-                    "Without a registered product ID the app sends a placeholder; the bank may "
-                    "stop accepting it. Register the app with the Deutsche Kreditwirtschaft and "
-                    "enter the ID here."
-                )
-            )
+    def _is_empty(self, login: BankLogin) -> bool:
+        """Added but nothing filled in: not saved."""
+        connector = self._connector(login)
+        if login.accounts or connector is None:
+            return False
+        required = [n for n, i in connector.login_model.model_fields.items() if i.is_required()]
+        return not any(login.settings.get(n) for n in required)
 
     def _save(self) -> None:
         self._store()
-        logins = [lg for lg in self.logins if lg.login_id or lg.accounts]
+        self._store_options()
+        logins = [lg for lg in self.logins if not self._is_empty(lg)]
         names = [link.account for lg in logins for link in lg.accounts]
         dupes = sorted({n for n in names if names.count(n) > 1})
         if dupes:
@@ -433,9 +613,21 @@ class BankAccessDialog(QDialog):
                 ),
             )
             return
-        fints = FintsConfig(product_id=self.product_id.text().strip() or None, logins=logins)
+        for login in logins:
+            if (problem := self._settings_problem(login)) is not None:
+                QMessageBox.warning(
+                    self,
+                    self.windowTitle(),
+                    self.tr("Please check the settings of %1:").replace("%1", login.name)
+                    + "\n\n"
+                    + problem,
+                )
+                return
+        used = {lg.connector for lg in logins}
+        options = {k: v for k, v in self.options.items() if k in used and v}
+        access = BankAccessConfig(connectors=options, logins=logins)
         try:
-            config_edit.save_fints(self.app.settings, fints)
+            config_edit.save_bank_access(self.app.settings, access)
         except Exception as e:
             show_error(self, self.windowTitle(), e)
             return

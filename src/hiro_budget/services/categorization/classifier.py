@@ -11,7 +11,9 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
+import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import datetime
@@ -34,12 +36,16 @@ _SPACES = re.compile(r"\s+")
 
 def features(tx: Transaction) -> str:
     """Text representation used for training and prediction."""
-    direction = "__in__" if tx.amount_cents > 0 else "__out__"
-    text = " ".join(
-        part
-        for part in (tx.merchant, tx.counterparty, tx.booking_type, tx.purpose, tx.details)
-        if part
+    return feature_text(
+        tx.amount_cents, tx.merchant, tx.counterparty, tx.booking_type, tx.purpose, tx.details
     )
+
+
+def feature_text(amount_cents: int, *parts: str | None) -> str:
+    """``features`` from plain column values (merchant, counterparty, booking type,
+    purpose, details)."""
+    direction = "__in__" if amount_cents > 0 else "__out__"
+    text = " ".join(part for part in parts if part)
     # Digits (card numbers, references) are noise; collapse them.
     text = _SPACES.sub(" ", _DIGITS.sub("0", text.lower()))
     return f"{direction} {text}"
@@ -117,7 +123,10 @@ class Classifier:
             "classes": self.classes,
         }
         terms = sorted(self.tfidf.vocabulary, key=self.tfidf.vocabulary.__getitem__)
-        with path.open("wb") as f:  # a file object: savez would append ".npz" to a name
+        # written next to it and moved over it: training runs in a worker thread (#55),
+        # and a Categorizer loading the model meanwhile must never see half a file
+        tmp = path.with_name(path.name + ".tmp")
+        with tmp.open("wb") as f:  # a file object: savez would append ".npz" to a name
             np.savez_compressed(
                 f,
                 meta=np.array(json.dumps(meta)),
@@ -126,6 +135,14 @@ class Classifier:
                 weights=self.weights.astype(np.float32),
                 intercept=self.intercept,
             )
+        for attempt in range(20):  # Windows refuses while a reader has the file open
+            try:
+                os.replace(tmp, path)
+                return
+            except PermissionError:
+                if attempt == 19:
+                    raise
+                time.sleep(0.05)
 
     @classmethod
     def load(cls, path: Path) -> Classifier | None:

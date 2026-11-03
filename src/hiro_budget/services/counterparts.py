@@ -66,9 +66,44 @@ class _Mirrors:
         return None
 
 
+def _load_counterparts(session: Session, transactions: list[Transaction]) -> None:
+    """``counterparts`` (with their splits) and ``account`` of all ``transactions`` in a
+    few queries, not one lazy load per booking (#54)."""
+    ids = [tx.id for tx in transactions if tx.id is not None]
+    for i in range(0, len(ids), 500):
+        session.scalars(
+            select(Transaction)
+            .options(
+                selectinload(Transaction.counterparts).selectinload(Transaction.splits),
+                selectinload(Transaction.account),
+            )
+            .where(Transaction.id.in_(ids[i : i + 500]))
+        ).all()
+
+
+def _is_counter_split(splits: list[Split], amount: int, source_account_id: int) -> bool:
+    """The counter-booking already has exactly the split it should have."""
+    if len(splits) != 1:
+        return False
+    s = splits[0]
+    return (
+        s.amount_cents == amount
+        and s.transfer_account_id == source_account_id
+        and s.source == SplitSource.TRANSFER
+        and s.category_id is None
+        and s.memo is None
+        and s.rule_id is None
+        and s.confidence is None
+    )
+
+
 def sync_counterparts(session: Session, transactions: list[Transaction], days: int) -> None:
-    """Create, update or delete counter-bookings so they match the transfer splits."""
+    """Create, update or delete counter-bookings so they match the transfer splits.
+
+    Writes only what differs: an unchanged counter-booking keeps its split (and its id)."""
     session.flush()
+    session.scalars(select(Account)).all()  # transfer targets come from the identity map
+    _load_counterparts(session, transactions)
     mirrors = _Mirrors(session, transactions, days)
     for tx in transactions:
         if tx.is_counterpart or tx.id is None:
@@ -104,13 +139,14 @@ def sync_counterparts(session: Session, transactions: list[Transaction], days: i
             current.currency = tx.currency
             current.counterparty = tx.account.name
             current.purpose = tx.display_name or ""
-            current.splits[:] = [
-                Split(
-                    amount_cents=amount,
-                    transfer_account=tx.account,
-                    source=SplitSource.TRANSFER,
-                )
-            ]
+            if not _is_counter_split(current.splits, amount, tx.account_id):
+                current.splits[:] = [
+                    Split(
+                        amount_cents=amount,
+                        transfer_account=tx.account,
+                        source=SplitSource.TRANSFER,
+                    )
+                ]
         # Counter-bookings for transfers that no longer exist.
         for stale in existing.values():
             tx.counterparts.remove(stale)

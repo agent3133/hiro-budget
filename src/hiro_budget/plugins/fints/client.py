@@ -1,4 +1,4 @@
-"""``BankSession`` on the ``fints`` library (FinTS 3.0, PIN/TAN).
+"""The connector session on the ``fints`` library (FinTS 3.0, PIN/TAN).
 
 Imported only when the user fetches or tests a connection. MT940 bookings are turned into
 ``ParsedTransaction`` the way the PDF importer would read them: whitespace collapsed, the
@@ -13,6 +13,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import date
 from decimal import Decimal
+from typing import TYPE_CHECKING, Any, cast
 
 from fints.client import FinTS3PinTanClient, NeedTANResponse
 from fints.exceptions import (
@@ -22,19 +23,27 @@ from fints.exceptions import (
     FinTSError,
 )
 
-from hiro_budget.config import BankLogin
-from hiro_budget.importers.base import ParsedTransaction
-from hiro_budget.services.bank import (
-    BankAccount,
-    BankError,
+from hiro_budget.plugin_api import (
     Cancelled,
     Confirmation,
-    Fetched,
+    ConnectorError,
+    LoginError,
     Offline,
-    PinError,
+    ParsedStatement,
+    ParsedTransaction,
+    RemoteAccount,
 )
 
+if TYPE_CHECKING:
+    from .connector import FintsLogin
+
 log = logging.getLogger(__name__)
+
+# python-fints logs every message it sends and receives on DEBUG (complete statements with
+# IBANs, names, purposes, balances): never, even when the app logs on DEBUG (#75)
+_library_log = logging.getLogger("fints")
+if _library_log.getEffectiveLevel() < logging.INFO:
+    _library_log.setLevel(logging.INFO)
 
 # FinTS booking texts that are named differently on the PDF statements (spike, issue #6)
 BOOKING_TYPES = {
@@ -105,7 +114,7 @@ def to_parsed(data: dict, enrich=None) -> ParsedTransaction:
     booking_type = clean(data.get("posting_text"))
     merchant, purchase = enrich(counterparty, purpose, booking) if enrich else (None, None)
     return ParsedTransaction(
-        booking_date=booking,
+        booking_date=cast("date", booking),  # MT940 bookings always have a date
         value_date=data.get("date"),
         amount_cents=cents(data["amount"]),
         booking_type=BOOKING_TYPES.get(booking_type, booking_type),
@@ -121,7 +130,7 @@ def to_parsed(data: dict, enrich=None) -> ParsedTransaction:
 
 class _Session:
     def __init__(
-        self, client: FinTS3PinTanClient, confirm: Confirmation, bank_code: str | None = None
+        self, client: Any, confirm: Confirmation | None, bank_code: str | None = None
     ) -> None:
         from hiro_budget.plugin_api import enricher_for
 
@@ -132,6 +141,7 @@ class _Session:
     def answer(self, result):
         """Confirm until the bank answers (app confirmation or TAN)."""
         while isinstance(result, NeedTANResponse):
+            assert self.confirm is not None
             challenge = clean(result.challenge) or ""
             if result.decoupled:
                 if not self.confirm.wait_for_app(challenge):
@@ -144,7 +154,7 @@ class _Session:
                 result = self.client.send_tan(result, tan)
         return result
 
-    def accounts(self) -> list[BankAccount]:
+    def accounts(self) -> list[RemoteAccount]:
         info = self.client.get_information()
         details = {}
         for a in info.get("accounts", []):
@@ -159,7 +169,7 @@ class _Session:
             # depots have an IBAN at ING too, but their statements carry the depot number
             bank_id = (number if kind == "depot" else iban) or iban or number or ""
             result.append(
-                BankAccount(
+                RemoteAccount(
                     bank_id=bank_id,
                     product=product,
                     kind=kind,
@@ -170,15 +180,20 @@ class _Session:
             )
         return result
 
-    def fetch(self, account: BankAccount, start: date | None) -> Fetched:
+    def fetch(self, account: RemoteAccount, start: date | None) -> ParsedStatement:
         balance = self.answer(self.client.get_balance(account.handle))
         booked = self.answer(self.client.get_transactions(account.handle, start, date.today()))
-        return Fetched(
-            account=account,
-            start=start,
-            balance_cents=cents(balance.amount) if balance is not None else None,
-            balance_date=balance.date if balance is not None else None,
+        return ParsedStatement(
+            importer="fints",
+            institution="",  # the app names it after the login
+            account_name=account.product,
+            account_kind=account.kind,
+            account_iban=account.bank_id,
+            period_start=start,
+            period_end=balance.date if balance is not None else None,
+            closing_balance_cents=cents(balance.amount) if balance is not None else None,
             transactions=[to_parsed(t.data, self.enrich) for t in booked or []],
+            incremental=True,
         )
 
 
@@ -201,7 +216,7 @@ def _bootstrap(client: FinTS3PinTanClient) -> None:
 
 @contextmanager
 def session(
-    login: BankLogin, pin: str, product_id: str, confirm: Confirmation
+    login: FintsLogin, pin: str, product_id: str, confirm: Confirmation
 ) -> Iterator[_Session]:
     try:
         client = FinTS3PinTanClient(
@@ -214,8 +229,8 @@ def session(
                 s.answer(client.init_tan_response)
             yield s
     except (FinTSClientPINError, FinTSClientTemporaryAuthError) as e:
-        raise PinError(str(e)) from e
+        raise LoginError(str(e)) from e
     except FinTSConnectionError as e:
         raise Offline(str(e)) from e
     except FinTSError as e:
-        raise BankError(str(e)) from e
+        raise ConnectorError(str(e)) from e

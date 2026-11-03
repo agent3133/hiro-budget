@@ -1,9 +1,9 @@
-"""Common data structures of statement importers.
+"""Common data structures of everything that brings bookings into the app (plugin API 2).
 
-An importer turns a source file (PDF, CSV, ...) into a ``ParsedStatement``. It knows
-nothing about the database; ``services.import_service`` persists the result. Importers
-come from plugins (``importers.plugins``); plugin code uses these types through
-``plugin_api``.
+A file importer turns a source file (PDF, CSV, ...) into a ``ParsedStatement``; a connector
+(``importers.connectors``) fetches one from a bank. Neither knows anything about the
+database: ``services.import_service`` persists both. They come from plugins
+(``importers.plugins``); plugin code uses these types through ``plugin_api``.
 """
 
 from __future__ import annotations
@@ -84,6 +84,10 @@ class ParsedStatement:
     dedupe_scope: str | None = None
     # also stored: a booking of the account with the same date and amount (see CsvFormat)
     match_by_date_amount: bool = False
+    # Fetched by a connector: the bookings from ``period_start`` on (None: as far back as
+    # the bank allows) as the bank lists them now, ``closing_balance_cents`` the balance on
+    # ``period_end``. Fetches overlap; bookings already stored are skipped (no overwrite).
+    incremental: bool = False
 
     @property
     def total_cents(self) -> int:
@@ -102,18 +106,23 @@ class ParsedStatement:
 
     @property
     def balance_difference_cents(self) -> int:
-        if not self.balance_checkable:
+        closing, opening = self.closing_balance_cents, self.opening_balance_cents
+        if closing is None or not self.balance_checkable:
             return 0
         if self.holdings:
-            return self.closing_balance_cents - sum(h.value_cents for h in self.holdings)
-        return self.closing_balance_cents - (self.opening_balance_cents + self.total_cents)
+            return closing - sum(h.value_cents for h in self.holdings)
+        assert opening is not None  # balance_checkable
+        return closing - (opening + self.total_cents)
 
 
 class ImportError_(Exception):
     """A source file could not be parsed."""
 
 
-class Importer(Protocol):
+class FileImporter(Protocol):
+    """Reads one kind of statement file. ``name`` is stored with every import: never
+    change it once files were imported with it."""
+
     name: str
 
     def detect(self, path: Path) -> bool:
@@ -123,13 +132,14 @@ class Importer(Protocol):
     def parse(self, path: Path) -> ParsedStatement: ...
 
 
-def find_importer(path: Path, candidates: list[Importer] | None = None) -> Importer:
-    """The first of ``candidates`` that recognizes the file; by default the importers of
-    the plugins last loaded (``importers.plugins``; the built-in ones before any import)."""
+def find_importer(path: Path, candidates: list[FileImporter] | None = None) -> FileImporter:
+    """The first of ``candidates`` that recognizes the file; by default the file importers
+    of the plugins last loaded (``importers.plugins``; the built-in ones before any
+    import)."""
     if candidates is None:
         from hiro_budget.importers.plugins import current
 
-        candidates = current().importers()
+        candidates = current().file_importers()
     for imp in candidates:
         if imp.detect(path):
             return imp

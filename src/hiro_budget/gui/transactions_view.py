@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import html
 from collections.abc import Callable
 from dataclasses import replace
 from datetime import date
@@ -16,7 +17,7 @@ from PySide6.QtCore import (
     QTimer,
     Signal,
 )
-from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QKeySequence, QPalette, QShortcut
+from PySide6.QtGui import QAction, QColor, QFont, QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -37,11 +38,9 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from sqlalchemy import select
 
 from hiro_budget.app import App
-from hiro_budget.db.models import Account
-from hiro_budget.gui import theme
+from hiro_budget.gui import shortcuts, theme
 from hiro_budget.gui.booking_card import BookingCard
 from hiro_budget.gui.booking_dialog import BookingDialog
 from hiro_budget.gui.common import (
@@ -61,15 +60,17 @@ from hiro_budget.gui.models.transaction_table_model import (
     TransactionTableModel,
 )
 from hiro_budget.gui.payee_review_dialog import PayeeReviewDialog
-from hiro_budget.gui.split_dialog import SplitDialog
 from hiro_budget.gui.widgets import (
     QuickFilterButton,
     action_bar,
+    banner,
     page_title,
     paint_chip,
     primary,
 )
+from hiro_budget.services import lookups
 from hiro_budget.services import transactions as txs
+from hiro_budget.services.networth import running_balances
 from hiro_budget.services.reports import booking_date_range
 from hiro_budget.services.transactions import TransactionRow, TxFilter
 
@@ -154,6 +155,7 @@ class TwoLineDelegate(QStyledItemDelegate):
         painter.restore()
 
 
+CARD_MIN, CARD_MAX = 280, 340  # default width of the booking card
 PURPOSE_MIN_WIDTH = 160  # the purpose column gives way to the others down to this
 
 
@@ -171,6 +173,53 @@ class TransactionsView(QWidget):
         self.choices: list[Choice] = []
         self._dates_initialized = False
 
+        bar = self._build_filter_bar()
+        quick_row = self._build_quick_filters()
+        self._build_table()
+        self._build_bars()
+        self._bind_keys()
+        self._build_card()
+
+        self.summary = QLabel()
+
+        self.splitter = splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self.table)
+        splitter.addWidget(self.card)
+        # a wider window widens the list, the card keeps its width (#41)
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 0)
+        splitter.setCollapsible(0, False)  # the card can be dragged away, the list not
+        splitter_state = app.ui_state.get("transactions.splitter", "")
+        # the position the user dragged to is kept (save_state); else a default once the
+        # splitter has its width (showEvent)
+        self._default_split = not splitter_state
+        if splitter_state:
+            splitter.restoreState(QByteArray.fromBase64(splitter_state.encode()))
+
+        layout = QVBoxLayout(self)
+        layout.addWidget(page_title(self.tr("Bookings")))
+        layout.addLayout(bar)
+        layout.addLayout(quick_row)
+        layout.addWidget(self.subset_bar)
+        layout.addWidget(self.review_bar)
+        layout.addWidget(splitter, 1)
+        layout.addLayout(
+            action_bar(
+                [
+                    self.new_button,
+                    self.payee_button,
+                    self.accept_selected_button,
+                    self.accept_all_button,
+                ],
+                end=self.summary,
+            )
+        )
+
+        self._connect()
+        self.reload_filters()
+
+    def _build_filter_bar(self) -> QHBoxLayout:
+        """Search, period, account and category above the list."""
         # -- filter bar --
         self.date_from = QDateEdit(calendarPopup=True)
         self.date_to = QDateEdit(calendarPopup=True)
@@ -179,7 +228,7 @@ class TransactionsView(QWidget):
         self.account = QComboBox()
         self.category = QComboBox()
         self.category.setMinimumWidth(220)
-        self.search = QLineEdit(placeholderText=self.tr("Search payee, purpose, notes…"))
+        self.search = QLineEdit(placeholderText=self.tr("Search payee, purpose, notes, amount…"))
         self.search.setClearButtonEnabled(True)
 
         self.period = DateRangeButton(self.date_from, self.date_to, self._full_range)
@@ -195,7 +244,10 @@ class TransactionsView(QWidget):
         self.new_button.setToolTip(self.tr("Enter an expense, income or transfer by hand (Ctrl+N)"))
         self.new_button.clicked.connect(lambda: self.new_booking())
         primary(self.new_button)
+        return bar
 
+    def _build_quick_filters(self) -> QHBoxLayout:
+        """The quick filters with their counts, as tabs under the filter bar."""
         # -- quick filters with their counts, as tabs under the filter bar --
         self.quick = {
             txs.ALL: QuickFilterButton(self.tr("All")),
@@ -220,7 +272,10 @@ class TransactionsView(QWidget):
         for button in self.quick.values():
             quick_row.addWidget(button)
         quick_row.addStretch(1)
+        return quick_row
 
+    def _build_table(self) -> None:
+        """The bookings table: model, columns, saved header, one or two lines."""
         # -- table --
         self.model = TransactionTableModel(self)
         self.proxy = ModelSortProxy(self)
@@ -254,13 +309,18 @@ class TransactionsView(QWidget):
             Col.SOURCE: SOURCE_WIDTH,
         }.items():
             self.table.setColumnWidth(col, width)
-        header_state = app.ui_state.get("transactions.header", "")
+        self.table.setColumnWidth(Col.BALANCE, 110)
+        header_state = self.app.ui_state.get("transactions.header", "")
         if header_state:
             header.restoreState(QByteArray.fromBase64(header_state.encode()))
+        if header.visualIndex(Col.BALANCE) == header.count() - 1:  # not placed yet
+            header.moveSection(header.visualIndex(Col.BALANCE), header.visualIndex(Col.AMOUNT) + 1)
+        self.table.setColumnHidden(Col.BALANCE, True)  # while one account is filtered
         # Every border can be dragged (also in widths saved by older versions, where the
         # purpose column had an automatic width); the last column takes the rest.
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setStretchLastSection(True)
+        self.stale = False  # data changed while hidden: reload_filters when shown (#56)
         self._columns_fitted = bool(header_state)  # else: purpose fills the window (showEvent)
         self.table.viewport().installEventFilter(self)  # resized: purpose fits (eventFilter)
         self._one_line_height = self.table.verticalHeader().defaultSectionSize()
@@ -269,7 +329,16 @@ class TransactionsView(QWidget):
             Col.ACCOUNT: TwoLineDelegate(lambda r: r.booking_type, bold=False, parent=self),
         }
         self.two_lines = False
-        self.set_two_lines(bool(app.ui_state.get("transactions.two_lines", True)))
+        self.set_two_lines(bool(self.app.ui_state.get("transactions.two_lines", True)))
+
+    def _build_bars(self) -> None:
+        """The subset bar and the review bar above the list (hidden at first)."""
+        # -- subset bar (shown while only given bookings are shown, e.g. a rule's hits) --
+        self._ids: tuple[int, ...] | None = None
+        self._ids_label = ""
+        self.subset_bar = banner(QLabel(), "info")
+        self.subset_bar.linkActivated.connect(lambda _link: self.show_ids(None))
+        self.subset_bar.hide()
 
         # -- review bar (shown with the "suggestions to review" filter) --
         self.review_bar = QWidget()
@@ -291,19 +360,35 @@ class TransactionsView(QWidget):
         self.review_bar.hide()
         for b in (self.accept_selected_button, self.accept_all_button):
             b.hide()
+
+    def _bind_keys(self) -> None:
+        """Keys on the list and on the page."""
         # keys on the list (not while a cell is being edited)
-        for keys, slot in (
-            (Qt.Key.Key_Return, self._return_pressed),
-            (Qt.Key.Key_Enter, self._return_pressed),
-            (Qt.Key.Key_F2, self.edit_category),
-            (QKeySequence.StandardKey.Delete, self._delete_key),
-        ):
-            key = QShortcut(QKeySequence(keys), self.table, slot)
-            key.setContext(Qt.ShortcutContext.WidgetShortcut)
-        back = QShortcut(QKeySequence(Qt.Key.Key_Escape), self.search, self.table.setFocus)
-        back.setContext(Qt.ShortcutContext.WidgetShortcut)
+        on_list = Qt.ShortcutContext.WidgetShortcut
+        # Return (and Enter): accept a suggestion while reviewing, else the category; F2
+        # always the category
+        for index, slot in ((0, self._return_pressed), (1, self.edit_category)):
+            shortcuts.bind("booking_category", self.table, slot, on_list, index=index)
+        shortcuts.bind("booking_category", self.table, self._return_pressed, on_list, index=2)
+        shortcuts.bind("delete_bookings", self.table, self._delete_key, on_list)
+        shortcuts.bind(
+            "split", self, self._split_selected, Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        shortcuts.bind("search_to_list", self.search, self.table.setFocus, on_list)
+        page = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        for index, key in enumerate((txs.ALL, txs.UNCATEGORIZED, txs.REVIEW)):
+            shortcuts.bind(
+                "quick_filter", self, lambda k=key: self._quick_filter(k), page, index=index
+            )
+        shortcuts.bind("clear_filters", self, lambda: self.show_selection(txs.ALL), page)
+        for index, step in ((0, -1), (1, 1)):
+            shortcuts.bind(
+                "period_step", self, lambda s=step: self.period.step(s), page, index=index
+            )
         self.setFocusProxy(self.table)
 
+    def _build_card(self) -> None:
+        """The selected booking as a card on the right, and its keys."""
         # -- the selected booking as a card on the right --
         self.card = BookingCard()
         self.notes = self.card.notes
@@ -311,39 +396,22 @@ class TransactionsView(QWidget):
         self._notes_tx_id: int | None = None
         self.card.category_chosen.connect(self._card_category)
         self.card.rule_requested.connect(self._card_rule)
-
-        self.summary = QLabel()
-
-        self.splitter = splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self.table)
-        splitter.addWidget(self.card)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 1)
-        splitter.setCollapsible(0, False)  # the card can be dragged away, the list not
-        splitter_state = app.ui_state.get("transactions.splitter", "")
-        if splitter_state:
-            splitter.restoreState(QByteArray.fromBase64(splitter_state.encode()))
-        else:
-            splitter.setSizes([1000, 340])
-
-        layout = QVBoxLayout(self)
-        layout.addWidget(page_title(self.tr("Bookings")))
-        layout.addLayout(bar)
-        layout.addLayout(quick_row)
-        layout.addWidget(self.review_bar)
-        layout.addWidget(splitter, 1)
-        layout.addLayout(
-            action_bar(
-                [
-                    self.new_button,
-                    self.payee_button,
-                    self.accept_selected_button,
-                    self.accept_all_button,
-                ],
-                end=self.summary,
-            )
+        # the card: Esc back to the list, Ctrl+E the note, Ctrl+R a rule (#69)
+        here = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        shortcuts.bind("search_to_list", self.card, self.table.setFocus, here)
+        shortcuts.bind("note", self, self._note_key, here)
+        shortcuts.bind("create_rule", self, self._rule_key, here)
+        self.card.rule_button.setToolTip(
+            shortcuts.tip(self.card.rule_button.toolTip(), "create_rule")
         )
+        self.card.payee_requested.connect(self.show_ids)
+        self.card.editor.save_requested.connect(self._save_split)
+        self.card.editor.revert_requested.connect(self._back_to_list)
+        self._refreshing = False  # the list is reloaded: no question about the split
+        self._staying = False  # back to the booking whose split is being edited
 
+    def _connect(self) -> None:
+        """Filters reload the list; the selection fills the card."""
         # -- signals --
         self._search_timer = QTimer(self, singleShot=True, interval=250)
         self._search_timer.timeout.connect(self.refresh)
@@ -354,12 +422,11 @@ class TransactionsView(QWidget):
         self.category.currentIndexChanged.connect(self.refresh)
         self.table.selectionModel().selectionChanged.connect(self._show_details)
 
-        self.reload_filters()
-
     # -- filters ---------------------------------------------------------------
 
     def reload_filters(self) -> None:
         """Rebuild filter combos (after import or config changes) and refresh the table."""
+        self.stale = False
         widgets = (self.date_from, self.date_to, self.account, self.category)
         for w in widgets:
             w.blockSignals(True)
@@ -369,7 +436,7 @@ class TransactionsView(QWidget):
                 self.choices = category_choices(s)
                 self.card.set_choices(self.choices)
                 filter_choices = category_choices(s, include_transfers=False)
-                accounts = list(s.scalars(select(Account).order_by(Account.name)))
+                accounts = lookups.accounts(s)
                 prev_acc = self.account.currentData()
                 self.account.clear()
                 self.account.addItem(self.tr("All accounts"), None)
@@ -383,7 +450,7 @@ class TransactionsView(QWidget):
             self.category.addItem(self.tr("All categories"), txs.ALL)
             self.category.addItem(self.tr("⚠ Uncategorized"), txs.UNCATEGORIZED)
             self.category.addItem(self.tr("? Suggestions to review"), txs.REVIEW)
-            self.category.addItem(self.tr("⇄ Transfers"), txs.TRANSFERS)
+            self.category.addItem(self.tr("↔ Transfers"), txs.TRANSFERS)
             for ch in filter_choices:
                 if ch.is_group_header:  # a group: all its categories
                     self.category.addItem(ch.label, txs.group_filter(ch.group_id))
@@ -422,7 +489,32 @@ class TransactionsView(QWidget):
             account_id=self.account.currentData(),
             category=self.category.currentData() or txs.ALL,
             text=self.search.text(),
+            ids=self._ids,
+            ids_label=self._ids_label,
         )
+
+    def show_ids(self, ids: list[int] | None, label: str = "") -> None:
+        """Only these bookings (over the whole period, other filters reset), or (None)
+        all again; ``label`` says above the list what they are."""
+        if ids is None:
+            self._ids, self._ids_label = None, ""
+            self._update_subset_bar()
+            self.refresh()
+            return
+        span = self._full_range()
+        start, end = span if span else (None, None)
+        self.restore_nav_state((TxFilter(start, end, ids=tuple(ids), ids_label=label), None))
+
+    def _update_subset_bar(self) -> None:
+        if self._ids is None:
+            self.subset_bar.hide()
+            return
+        self.subset_bar.setText(
+            self.tr("Only %1 (%2 bookings). <a href='#'>Show all bookings</a>")
+            .replace("%1", html.escape(self._ids_label))
+            .replace("%2", str(len(self._ids)))
+        )
+        self.subset_bar.show()
 
     def show_selection(
         self,
@@ -435,6 +527,8 @@ class TransactionsView(QWidget):
         for w in widgets:
             w.blockSignals(True)
         try:
+            self._ids, self._ids_label = None, ""
+            self._update_subset_bar()
             self.account.setCurrentIndex(0)
             self.search.clear()
             if date_from is not None:
@@ -448,6 +542,12 @@ class TransactionsView(QWidget):
         self.period.refresh()  # the dates were set quietly
         self.refresh()
 
+    def show_account(self, account_id: int) -> None:
+        """All bookings of an account, over the whole period."""
+        span = self._full_range()
+        start, end = span if span else (None, None)
+        self.restore_nav_state((TxFilter(start, end, account_id=account_id), None))
+
     def nav_state(self) -> tuple[TxFilter, int | None]:
         """Filter and selected booking, for going back here (history)."""
         rows = self.selected_rows()
@@ -459,6 +559,8 @@ class TransactionsView(QWidget):
         for w in widgets:
             w.blockSignals(True)
         try:
+            self._ids, self._ids_label = f.ids, f.ids_label
+            self._update_subset_bar()
             if f.date_from and f.date_to:
                 self.date_from.setDate(to_qdate(f.date_from))
                 self.date_to.setDate(to_qdate(f.date_to))
@@ -483,6 +585,19 @@ class TransactionsView(QWidget):
         for key, button in self.quick.items():
             button.setChecked(f.category == key)
         self.payee_button.setVisible(self.quick[txs.UNCATEGORIZED].count > 0)
+
+    def focus_regions(self) -> list[QWidget]:
+        """F6 goes round these: filters, quick filters, list, the card (#69)."""
+        return [self.search, self.quick[txs.ALL], self.table, self.card.category]
+
+    def _note_key(self) -> None:
+        if self.notes.isVisible() and self.notes.isEnabled():
+            self.notes.setFocus()
+            self.notes.selectAll()
+
+    def _rule_key(self) -> None:
+        if self.card.rule_button.isVisible() and self.card.rule_button.isEnabled():
+            self.card.rule_button.click()
 
     def _quick_filter(self, key: str) -> None:
         if key == txs.REVIEW:
@@ -512,19 +627,28 @@ class TransactionsView(QWidget):
 
     def refresh(self) -> None:
         selected = {r.id for r in self.selected_rows()}
+        f = self.current_filter()
         with self.app.session() as s:
-            rows = txs.list_transactions(s, self.current_filter())
-        self.model.set_rows(rows)
-        self._update_review()
-        if selected:
-            sel = self.table.selectionModel()
-            for i in range(self.proxy.rowCount()):
-                idx = self.proxy.index(i, 0)
-                if idx.data(ROW_ROLE).id in selected:
-                    sel.select(
-                        idx,
-                        sel.SelectionFlag.Select | sel.SelectionFlag.Rows,
-                    )
+            rows = txs.list_transactions(s, f)
+            # one account: its balance after each booking, as on its statements (#45)
+            balances = running_balances(s, f.account_id) if f.account_id else None
+        self.table.setColumnHidden(Col.BALANCE, balances is None)
+        self._refreshing = True  # the selection is cleared and restored on the way
+        try:
+            self.model.set_rows(rows, balances)
+            self._update_review()
+            if selected:
+                sel = self.table.selectionModel()
+                for i in range(self.proxy.rowCount()):
+                    idx = self.proxy.index(i, 0)
+                    if idx.data(ROW_ROLE).id in selected:
+                        sel.select(
+                            idx,
+                            sel.SelectionFlag.Select | sel.SelectionFlag.Rows,
+                        )
+        finally:
+            self._refreshing = False
+        self._show_details()
         self._update_summary()
 
     def _update_review(self) -> None:
@@ -538,10 +662,22 @@ class TransactionsView(QWidget):
         self.accept_all_button.setEnabled(shown > 0)
 
     def showEvent(self, event) -> None:
+        if self.stale:
+            self.reload_filters()
         super().showEvent(event)
+        if self._default_split:
+            self._default_split = False
+            self._set_default_split()
         if not self._columns_fitted:
             self._columns_fitted = True
             QTimer.singleShot(0, self._fit_purpose)  # once the table has its final width
+
+    def _set_default_split(self) -> None:
+        """The card at 22 % of the width, between CARD_MIN and CARD_MAX: about a fifth
+        on a laptop, no wider than its content needs on a large screen."""
+        total = sum(self.splitter.sizes()) or self.splitter.width()
+        card = max(CARD_MIN, min(CARD_MAX, round(total * 0.22)))
+        self.splitter.setSizes([max(total - card, 1), card])
 
     def set_two_lines(self, on: bool) -> None:
         """Two lines per booking (payee over purpose, account over type) or one line
@@ -572,10 +708,11 @@ class TransactionsView(QWidget):
             return  # not laid out yet: fitted when shown (resize)
         h = self.table.horizontalHeader()
         flexible = self._flexible_column()
+        last = h.logicalIndex(h.count() - 1)  # it stretches
         others = sum(
             h.sectionSize(c)
-            for c in range(h.count() - 1)
-            if c != flexible and not h.isSectionHidden(c)
+            for c in range(h.count())
+            if c not in (flexible, last) and not h.isSectionHidden(c)
         )
         # the last column stretches over the rest: count it with its normal width
         free = self.table.viewport().width() - others - SOURCE_WIDTH
@@ -626,8 +763,18 @@ class TransactionsView(QWidget):
                 self.model.replace_row(txs.get_row(s, tx_id))
 
     def _show_details(self) -> None:
+        if self._refreshing or self._staying:
+            return
         self._save_note()  # keep a note typed before the selection changed
         rows = self.selected_rows()
+        shown = self.card.row
+        if (
+            shown is not None
+            and self.card.editor.has_unsaved_changes()
+            and not (len(rows) == 1 and rows[0].id == shown.id)
+            and not self._leave_split(shown)
+        ):
+            return
         if len(rows) != 1:
             self._notes_tx_id = None
             self.card.show_rows(rows)
@@ -636,6 +783,64 @@ class TransactionsView(QWidget):
         self._notes_tx_id = r.id
         parts = self.model.split_tooltip(r) if r.is_split else ""
         self.card.show_rows([r], parts, self.model.source_label(r))
+        with self.app.session() as s:
+            self.card.show_history(txs.payee_history(s, r.id))
+
+    def _leave_split(self, shown: TransactionRow) -> bool:
+        """The selection moves away from a booking with unsaved parts: save them, discard
+        them, or stay (False)."""
+        editor = self.card.editor
+        buttons = QMessageBox.StandardButton.Discard | QMessageBox.StandardButton.Cancel
+        if editor.can_save():
+            buttons |= QMessageBox.StandardButton.Save
+        answer = QMessageBox.question(
+            self,
+            self.tr("Unsaved split"),
+            self.tr("The split of “%1” has unsaved changes.").replace("%1", shown.payee),
+            buttons,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if answer == QMessageBox.StandardButton.Save:
+            return self._save_split(editor.split_parts(), shown.id)
+        if answer == QMessageBox.StandardButton.Discard:
+            editor.mark_saved()
+            return True
+        self._staying = True  # back to it; the card still shows it if the list does not
+        try:
+            self.table.clearSelection()
+            self._select_id(shown.id)
+        finally:
+            self._staying = False
+        return False
+
+    def _back_to_list(self) -> None:
+        """After Revert (or saving a booking unsplit) the editor may be gone: focus the
+        list instead of a hidden field."""
+        if not self.card.editing:
+            self.table.setFocus()
+
+    def _split_selected(self) -> None:
+        rows = self.selected_rows()
+        if len(rows) == 1:
+            self.split(rows[0])
+
+    def _save_split(self, parts: list, tx_id: int | None = None) -> bool:
+        if tx_id is None:
+            if self.card.row is None:
+                return False
+            tx_id = self.card.row.id
+        transfer = any(p.transfer_account_id for p in parts)
+        if not self._run(
+            self.tr("Split booking"), lambda s: txs.set_splits(s, tx_id, parts, self._days)
+        ):
+            return False
+        self.card.editor.mark_saved()
+        self._after_change([tx_id], transfer)
+        self._back_to_list()
+        return True
+
+    def has_unsaved_changes(self) -> bool:
+        return self.card.editor.has_unsaved_changes()
 
     def _card_category(self, choice: Choice) -> None:
         if self._notes_tx_id is not None:
@@ -659,8 +864,8 @@ class TransactionsView(QWidget):
 
     def _refresh_rows(self, ids: list[int]) -> None:
         with self.app.session() as s:
-            for i in ids:
-                self.model.replace_row(txs.get_row(s, i))
+            for row in txs.list_transactions(s, txs.TxFilter(ids=ids)):
+                self.model.replace_row(row)
         self._update_summary()
         self._show_details()
         self.data_changed.emit()
@@ -686,19 +891,30 @@ class TransactionsView(QWidget):
             self._refresh_rows(tx_ids)
 
     def assign(self, tx_id: int, choice: Choice) -> None:
-        def do(s):
-            if choice.transfer_account_id is not None:
-                txs.mark_transfer(s, tx_id, choice.transfer_account_id, self._days)
-            else:
-                txs.set_category(s, tx_id, choice.category_id, self._days)
-
-        had_transfer = self._involves_transfer([tx_id])
-        if self._run(self.tr("Assign category"), do):
-            self._after_change([tx_id], had_transfer or choice.transfer_account_id is not None)
+        self.assign_many([tx_id], choice)
 
     def assign_many(self, ids: list[int], choice: Choice) -> None:
-        for i in ids:
-            self.assign(i, choice)
+        """One session and one refresh for all ``ids`` (#58: one each took 106 ms per
+        booking). A booking that cannot take the choice (a counter-booking, a transfer to
+        its own account) is left out; the others are assigned, the reasons shown once."""
+        skipped: list[str] = []
+
+        def do(s):
+            for tx_id in ids:
+                try:  # SplitError comes before anything is changed
+                    if choice.transfer_account_id is not None:
+                        txs.mark_transfer(s, tx_id, choice.transfer_account_id, self._days)
+                    else:
+                        txs.set_category(s, tx_id, choice.category_id, self._days)
+                except txs.SplitError as e:
+                    if str(e) not in skipped:
+                        skipped.append(str(e))
+
+        had_transfer = self._involves_transfer(ids)
+        if self._run(self.tr("Assign category"), do):
+            self._after_change(ids, had_transfer or choice.transfer_account_id is not None)
+        if skipped:
+            show_error(self, self.tr("Assign category"), "\n".join(skipped))
 
     def _context_menu(self, pos) -> None:
         rows = self.selected_rows()
@@ -793,14 +1009,11 @@ class TransactionsView(QWidget):
         return menu
 
     def split(self, row: TransactionRow) -> None:
-        dlg = SplitDialog(row, self.choices, self)
-        if dlg.exec():
-            transfer = any(p.transfer_account_id for p in dlg.parts)
-            if self._run(
-                self.tr("Split booking"),
-                lambda s: txs.set_splits(s, row.id, dlg.parts, self._days),
-            ):
-                self._after_change([row.id], transfer)
+        """The card's split editor for this booking (context menu "Split…", Ctrl+D)."""
+        if self.card.row is None or self.card.row.id != row.id:
+            self._select_id(row.id)
+        if self.card.row is not None and self.card.row.id == row.id:
+            self.card.start_split()
 
     # -- manual bookings -------------------------------------------------------
 

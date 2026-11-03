@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from hiro_budget.services.reports import UNCATEGORIZED_KEY, CategoryTotal, MonthTotals
-from hiro_budget.services.transactions import TransactionRow
+from hiro_budget.services.transactions import SplitView, TransactionRow
 
 HEADERS = {
     "de": {
@@ -115,7 +115,8 @@ def transactions_table(
     ]  # fmt: skip
     data = []
     for r in rows:
-        for s in r.splits or [None]:
+        splits: list[SplitView | None] = list(r.splits) or [None]  # no splits: one row
+        for s in splits:
             data.append(
                 [
                     r.booking_date,
@@ -174,7 +175,14 @@ def categories_table(
 # --- writers -------------------------------------------------------------------------
 
 
+# Spreadsheets run a cell that starts with one of these as a formula (OWASP "CSV
+# injection"); booking texts come from third parties (#74).
+_FORMULA_START = ("=", "+", "-", "@", "\t", "\r")
+
+
 def _csv_value(value: Any, language: str) -> str:
+    if isinstance(value, str):
+        return "'" + value if value.startswith(_FORMULA_START) else value
     if value is None:
         return ""
     if isinstance(value, date):
@@ -211,6 +219,9 @@ def write_xlsx(
             cell.font = Font(bold=True)
         for row in data:
             ws.append(row)
+            for cell in ws[ws.max_row]:
+                if cell.data_type == "f":  # openpyxl takes text starting with "=" as a formula
+                    cell.data_type = "s"
         for col, key in enumerate(keys, start=1):
             letter = get_column_letter(col)
             fmt = "#,##0.00 €" if key in _MONEY else "DD.MM.YYYY" if key in _DATES else None

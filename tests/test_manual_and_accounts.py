@@ -351,6 +351,42 @@ def test_startup_creates_missing_counter_bookings(app, config_dir, statement_pdf
         assert len(rows_of(s, "ING Baufinanzierung")) == 1
 
 
+def test_start_and_recategorize_write_nothing_when_nothing_changed(
+    app, config_dir, statement_pdf
+) -> None:
+    """#54: counter-bookings and categorized splits were deleted and inserted again at
+    every start and on every recategorization; unchanged ones now keep their rows."""
+    from sqlalchemy import Engine, event
+
+    from hiro_budget.app import App
+    from hiro_budget.services.categorization.pipeline import recategorize_all
+
+    with app.session() as s:
+        import_service.import_file(s, app.settings, statement_pdf)
+        hw = txs.list_transactions(s, txs.TxFilter(text="Handwerker"))[0]
+        txs.mark_transfer(s, hw.id, acc_id(s, "Bargeld"))
+    db = sqlite3.connect(app.settings.db_path)
+    before = db.execute("select * from split order by id").fetchall()
+    assert any(r for r in before)  # splits with counter-bookings to compare
+
+    writes = []
+
+    def record(conn, cursor, statement, *args) -> None:
+        if not statement.lstrip().upper().startswith("SELECT"):
+            writes.append(statement.split()[0])
+
+    event.listen(Engine, "before_cursor_execute", record)
+    try:
+        restarted = App.from_config_dir(config_dir)
+        with restarted.session() as s:
+            recategorize_all(s, restarted.settings)
+        App.from_config_dir(config_dir)
+    finally:
+        event.remove(Engine, "before_cursor_execute", record)
+    assert [w for w in writes if w in ("INSERT", "DELETE", "UPDATE")] == []
+    assert db.execute("select * from split order by id").fetchall() == before
+
+
 # --- budget relevance of transfers to tracking accounts ------------------------------
 
 

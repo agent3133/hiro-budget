@@ -1,0 +1,6 @@
+name: fints
+version: 2.0.0
+api: 2
+description: Online banking via FinTS 3.0 (PIN/TAN), e.g. ING
+connectors:
+  - {module: connector, class: FintsConnector}

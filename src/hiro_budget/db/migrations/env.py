@@ -21,9 +21,11 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    engine = config.attributes.get("engine") or create_engine(
-        config.get_main_option("sqlalchemy.url")
-    )
+    url = config.get_main_option("sqlalchemy.url")
+    engine = config.attributes.get("engine")
+    if engine is None:
+        assert url is not None, "no engine and no sqlalchemy.url"
+        engine = create_engine(url)
     with engine.connect() as connection:
         # Batch migrations on SQLite recreate tables (copy, drop, rename). With foreign
         # keys enabled, dropping a table would cascade-delete referencing rows (e.g. all

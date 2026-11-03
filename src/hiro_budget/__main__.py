@@ -106,90 +106,86 @@ def _ask_overlap(name: str, p) -> str:
             return choices[answer]
 
 
+def _print_preview(p) -> None:
+    stmt = p.statement
+    if stmt.valuation:
+        print(
+            f"{p.path.name}: balance statement of {p.account_name} on "
+            f"{stmt.period_end}, {len(stmt.holdings)} positions, "
+            f"total {'OK' if stmt.balance_ok else 'NOT OK'}"
+            + (f", replaces {p.replaces_valuation}" if p.replaces_valuation else "")
+        )
+    else:
+        print(
+            f"{p.path.name}: {len(stmt.transactions)} bookings, account {p.account_name}, "
+            f"balance {'OK' if stmt.balance_ok else 'NOT OK'}, "
+            f"{p.new_count} new, {p.duplicate_count} duplicates"
+        )
+
+
+def _print_outcome(f) -> None:
+    match f.status:
+        case "already_imported":
+            print("  skipped: already imported")
+        case "nothing_new":
+            print("  nothing new")
+        case "cancelled":
+            print("  cancelled")
+        case "failed":
+            if f.preview is not None and f.preview.errors:
+                print("  NOT imported: " + f.error)
+            else:
+                print(f"{f.path.name}: {f.error}", file=sys.stderr)
+        case "imported":
+            r = f.result
+            if f.preview.statement.valuation:
+                print(f"  imported, {r.holdings} positions")
+                return
+            replaced = f", replaced {r.replaced}" if r.replaced else ""
+            if r.matched:
+                replaced += f", {r.matched} manual bookings matched"
+            print(f"  imported {r.added}{replaced}; categorization: {r.categorization}")
+            for w in r.categorization.warnings:
+                print(f"  warning: {w}")
+
+
 def cmd_import(settings: Settings, paths: list[Path], on_overlap: str | None) -> int:
     from hiro_budget.app import App
-    from hiro_budget.importers.base import ImportError_
-    from hiro_budget.services import import_service
-    from hiro_budget.services.bank.fetch import cutovers
+    from hiro_budget.services.categorization.pipeline import train_classifier
+    from hiro_budget.services.import_batch import import_files
     from hiro_budget.services.import_service import OverlapMode
 
-    app = App(settings)
-    if settings.app.backup.before_import:
-        from hiro_budget.services.backup import create_backup
+    def decide(p):
+        if on_overlap is not None:
+            return (None if on_overlap == "cancel" else OverlapMode(on_overlap)), True
+        if not sys.stdin.isatty():
+            print("  skipped: overlaps stored bookings; use --on-overlap to decide")
+            return None, False
+        choice = _ask_overlap(p.path.name, p)
+        return (None if choice == "cancel" else OverlapMode(choice)), False
 
-        try:
-            print(f"backup: {create_backup(settings, 'import')}")
-        except Exception as e:
-            print(f"warning: backup failed: {e}", file=sys.stderr)
-    failed = 0
-    for path in _collect_files(paths):
-        try:
-            with app.session() as s:
-                p = import_service.preview(
-                    s,
-                    path,
-                    match_days=settings.app.matching.days,
-                    cutovers=cutovers(s, settings),
-                    settings=settings,
-                )
-            stmt = p.statement
-            if stmt.valuation:
-                print(
-                    f"{path.name}: balance statement of {p.account_name} on "
-                    f"{stmt.period_end}, {len(stmt.holdings)} positions, "
-                    f"total {'OK' if stmt.balance_ok else 'NOT OK'}"
-                    + (f", replaces {p.replaces_valuation}" if p.replaces_valuation else "")
-                )
-            else:
-                print(
-                    f"{path.name}: {len(stmt.transactions)} bookings, account {p.account_name}, "
-                    f"balance {'OK' if stmt.balance_ok else 'NOT OK'}, "
-                    f"{p.new_count} new, {p.duplicate_count} duplicates"
-                )
-            if p.file_already_imported:
-                print("  skipped: already imported")
-                continue
-            if p.errors:
-                print("  NOT imported: " + "; ".join(p.errors))
-                failed += 1
-                continue
-            mode = None
-            if p.overlap is not None:
-                choice = on_overlap
-                if choice is None:
-                    if not sys.stdin.isatty():
-                        print("  skipped: overlaps stored bookings; use --on-overlap to decide")
-                        continue
-                    choice = _ask_overlap(path.name, p)
-                if choice == "cancel":
-                    print("  cancelled")
-                    continue
-                mode = OverlapMode(choice)
-            elif p.new_count == 0 and not stmt.valuation:
-                print("  nothing new")
-                continue
-            with app.session() as s:
-                p = import_service.preview(
-                    s,
-                    path,
-                    match_days=settings.app.matching.days,
-                    cutovers=cutovers(s, settings),
-                    settings=settings,
-                )
-                result = import_service.commit(s, settings, p, mode=mode)
-            if stmt.valuation:
-                print(f"  imported, {result.holdings} positions")
-                continue
-            replaced = f", replaced {result.replaced}" if result.replaced else ""
-            if result.matched:
-                replaced += f", {result.matched} manual bookings matched"
-            print(f"  imported {result.added}{replaced}; categorization: {result.categorization}")
-            for w in result.categorization.warnings:
-                print(f"  warning: {w}")
-        except (ImportError_, OSError) as e:
-            print(f"{path.name}: {e}", file=sys.stderr)
-            failed += 1
-    return 1 if failed else 0
+    def backup_failed(e: Exception) -> bool:
+        print(f"warning: backup failed: {e}", file=sys.stderr)
+        return True
+
+    app = App(settings)
+    batch = import_files(
+        app.session,
+        settings,
+        _collect_files(paths),
+        decide,
+        backup_failed=backup_failed,
+        on_preview=_print_preview,
+        on_done=_print_outcome,
+    )
+    if batch.backup is not None:
+        print(f"backup: {batch.backup}")
+    if batch.imported_any and settings.app.ml.enabled:
+        with app.session() as s:
+            clf = train_classifier(s, settings)
+        if clf is not None:
+            print(f"classifier trained on {clf.n_samples} bookings")
+    return 1 if batch.count("failed") else 0
 
 
 def cmd_recategorize(settings: Settings) -> int:

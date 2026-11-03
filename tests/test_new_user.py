@@ -200,8 +200,6 @@ def test_3_undo_an_import_and_import_again(qtbot, home, monkeypatch):
 
 
 def test_4_categorize(qtbot, home, monkeypatch):
-    from hiro_budget.gui.split_dialog import SplitDialog
-
     w = main_window(qtbot, home.app)
     view = w.transactions
     rows = view.model.rows()
@@ -213,16 +211,13 @@ def test_4_categorize(qtbot, home, monkeypatch):
     rent = next(r for r in view.model.rows() if r.amount_cents == -120_00)
     cats = [c for c in view.choices if c.category_id is not None][:3]
 
-    def split_in_three(dlg):
-        dlg._add_row()
-        for i, (cents, choice) in enumerate(zip((-100_00, -15_00, -5_00), cats, strict=True)):
-            dlg.table.cellWidget(i, 1).setValue(cents / 100)
-            dlg.table.cellWidget(i, 0).setCurrentIndex(dlg.table.cellWidget(i, 0).findData(choice))
-        dlg._accept()
-        return 1
-
-    monkeypatch.setattr(SplitDialog, "exec", split_in_three)
     view.split(rent)
+    editor = view.card.editor
+    editor.add_part()
+    for part, cents, choice in zip(editor.parts, (-100_00, -15_00, -5_00), cats, strict=True):
+        part.amount.setValue(cents / 100)
+        part.combo.setCurrentIndex(part.combo.findData(choice))
+    editor.save()
     split = next(r for r in view.model.rows() if r.id == rent.id)
     assert [s.amount_cents for s in split.splits] == [-100_00, -15_00, -5_00]
 
@@ -281,20 +276,20 @@ def test_6_own_plugins(qtbot, home, monkeypatch):
 
 
 def test_7_fetch_from_the_bank(home):
-    from hiro_budget.services.bank import fetch
+    from hiro_budget.services import connections
     from tests.test_bank_fetch import LOGIN, FakeBank, fetched, link, tx
 
     settings = home.app.settings
     fake = FakeBank()
     with home.app.session() as s:
         account = s.scalar(select(Account).where(Account.name == "ING Girokonto"))
-        cut = fetch.suggested_fetch_from(s, account.id)
+        cut = connections.suggested_fetch_from(s, account.id, "fints")
     giro = link("ING Girokonto", fetch_from=cut)
-    settings.app.fints.logins = [LOGIN.model_copy(update={"accounts": [giro]})]
+    settings.app.bank_access.logins = [LOGIN.model_copy(update={"accounts": [giro]})]
     fake.bookings[giro.bank_id] = [tx(date(2026, 4, 2), -50_00), tx(date(2026, 4, 3), -9_09)]
     before = bookings(home.app, "ING Girokonto")
     with home.app.session() as s:
-        result = fetch.import_fetched(s, settings, fetched(fake, [giro], s), retrain=False)
+        result = connections.import_fetched(s, settings, fetched(fake, [giro], s), retrain=False)
     assert result.added == 2
     assert bookings(home.app, "ING Girokonto") == before + 2
     home.counts["final"] = bookings(home.app)

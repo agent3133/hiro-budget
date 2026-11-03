@@ -49,6 +49,7 @@ def write_plugin(folder: Path, name: str, manifest: str, files: dict[str, str] |
     d.mkdir(parents=True)
     (d / "plugin.yaml").write_text(textwrap.dedent(manifest), encoding="utf-8")
     for file, text in (files or {}).items():
+        (d / file).parent.mkdir(parents=True, exist_ok=True)
         (d / file).write_text(textwrap.dedent(text), encoding="utf-8")
     return d
 
@@ -58,7 +59,7 @@ def importer_plugin(folder: Path, name: str, importer_name: str = "demo", requir
     return write_plugin(
         folder,
         name,
-        f"name: {name}\nversion: 1.0.0\napi: 1\n{req}"
+        f"name: {name}\nversion: 1.0.0\napi: 2\n{req}"
         "importers:\n  - {module: importer, class: DemoImporter}\n",
         {"importer.py": IMPORTER.format(name=importer_name)},
     )
@@ -115,11 +116,11 @@ def test_builtin_importer_is_found_and_detects(builtin, tmp_path):
 def test_a_broken_manifest_skips_only_its_plugin(builtin):
     folder = builtin[0]
     importer_plugin(folder, "good")
-    write_plugin(folder, "typo", "name: typo\nversion: '1'\napi: 1\nimporter: []\n")
-    write_plugin(folder, "renamed", "name: other\nversion: '1'\napi: 1\n")
-    write_plugin(folder, "future", "name: future\nversion: '1'\napi: 2\n")
+    write_plugin(folder, "typo", "name: typo\nversion: '1'\napi: 2\nimporter: []\n")
+    write_plugin(folder, "renamed", "name: other\nversion: '1'\napi: 2\n")
+    write_plugin(folder, "future", "name: future\nversion: '1'\napi: 3\n")
     write_plugin(
-        folder, "noformat", "name: noformat\nversion: '1'\napi: 1\nformats: [x.csv.yaml]\n"
+        folder, "noformat", "name: noformat\nversion: '1'\napi: 2\nformats: [x.csv.yaml]\n"
     )
     write_plugin(folder, "badyaml", "name: [unclosed\n")
     reg = discover(None, builtin)
@@ -127,13 +128,13 @@ def test_a_broken_manifest_skips_only_its_plugin(builtin):
     problems = dict(reg.problems())
     assert "Extra inputs are not permitted" in problems["typo"]
     assert "differs from its folder" in problems["renamed"]
-    assert "plugin API 2 is not supported" in problems["future"]
+    assert "plugin API 3 is not supported" in problems["future"]
     assert "missing format files: x.csv.yaml" in problems["noformat"]
     assert "plugin.yaml" in problems["badyaml"]
 
 
 def test_a_numeric_version_is_text(builtin):
-    write_plugin(builtin[0], "lib", "name: lib\nversion: 1\napi: 1\n")
+    write_plugin(builtin[0], "lib", "name: lib\nversion: 1\napi: 2\n")
     assert discover(None, builtin).get("lib").manifest.version == "1"
 
 
@@ -142,7 +143,7 @@ def test_requirements(builtin):
     write_plugin(
         folder,
         "lib",
-        "name: lib\nversion: '1'\napi: 1\n",
+        "name: lib\nversion: '1'\napi: 2\n",
         {"helpers.py": "def greet():\n    return 'from lib'\n"},
     )
     importer_plugin(folder, "uses_lib", requires=["lib"])
@@ -169,7 +170,7 @@ def test_user_plugins_with_code_need_enabling(builtin, tmp_path):
     write_plugin(
         user,
         "my_format",
-        "name: my_format\nversion: '1'\napi: 1\nformats: [bank.csv.yaml]\n",
+        "name: my_format\nversion: '1'\napi: 2\nformats: [bank.csv.yaml]\n",
         {
             "bank.csv.yaml": """\
                 name: My Bank
@@ -187,17 +188,61 @@ def test_user_plugins_with_code_need_enabling(builtin, tmp_path):
     assert [i.name for i in reg.importers()] == ["demo"]
 
 
+def test_codeless_user_plugin_with_py_files_needs_enabling(builtin, tmp_path):
+    """#73: a manifest without importers must not let a library's .py files run unasked
+    (here it would replace the built-in library a built-in importer imports)."""
+    import builtins
+
+    user = tmp_path / "config_plugins"
+    write_plugin(builtin[0], "lib", "name: lib\nversion: '1'\napi: 2\n", {"helpers.py": ""})
+    importer_plugin(builtin[0], "uses_lib", requires=["lib"])
+    write_plugin(
+        user,
+        "lib",
+        "name: lib\nversion: '9'\napi: 2\n",
+        {"helpers.py": "import builtins\nbuiltins.HIRO_PWNED = True\n"},
+    )
+    reg = discover(user, builtin)
+    assert statuses(reg) == [
+        ("lib", "user", "disabled"),
+        ("lib", "builtin", "available"),
+        ("uses_lib", "builtin", "available"),
+    ]
+    from hiro_budget import plugin_api
+
+    plugin_api.module("lib", "helpers")  # the built-in one
+    assert not hasattr(builtins, "HIRO_PWNED")
+    reg = discover(user, builtin, enabled=["lib"])
+    assert statuses(reg)[:2] == [("lib", "user", "available"), ("lib", "builtin", "replaced")]
+
+
+def test_a_compiled_module_counts_as_code(builtin, tmp_path):
+    user = tmp_path / "config_plugins"
+    write_plugin(user, "lib", "name: lib\nversion: '1'\napi: 2\n", {"sub/helpers.pyc": ""})
+    assert status(discover(user, builtin))["lib"] == ("user", "disabled")
+
+
+def test_module_refuses_a_user_plugin_that_is_not_enabled(builtin, tmp_path):
+    user = tmp_path / "config_plugins"
+    write_plugin(user, "lib", "name: lib\nversion: '1'\napi: 2\n", {"helpers.py": "X = 1\n"})
+    reg = discover(user, builtin, enabled=["lib"])
+    assert reg.module("lib", "helpers").X == 1
+    reg.enabled = frozenset()  # a plugin marked available by mistake
+    with pytest.raises(LookupError, match="not enabled"):
+        reg.module("lib", "helpers")
+
+
 def test_user_plugin_replaces_the_builtin_one_everywhere(builtin, tmp_path):
     user = tmp_path / "config_plugins"
     for folder, text in ((builtin[0], "built-in"), (user, "user")):
         write_plugin(
             folder,
             "lib",
-            "name: lib\nversion: '1'\napi: 1\n",
+            "name: lib\nversion: '1'\napi: 2\n",
             {"helpers.py": f"def greet():\n    return '{text}'\n"},
         )
     importer_plugin(builtin[0], "uses_lib", requires=["lib"])
-    reg = discover(user, builtin)
+    reg = discover(user, builtin, enabled=["lib"])  # its helpers.py is code
     assert statuses(reg) == [
         ("lib", "user", "available"),
         ("lib", "builtin", "replaced"),
@@ -214,14 +259,14 @@ def test_failing_plugin_code_is_reported_and_skipped(builtin, tmp_path):
     write_plugin(
         folder,
         "broken_import",
-        "name: broken_import\nversion: '1'\napi: 1\n"
+        "name: broken_import\nversion: '1'\napi: 2\n"
         "importers:\n  - {module: importer, class: Missing}\n",
         {"importer.py": "import does_not_exist\n"},
     )
     write_plugin(
         folder,
         "broken_detect",
-        "name: broken_detect\nversion: '1'\napi: 1\n"
+        "name: broken_detect\nversion: '1'\napi: 2\n"
         "importers:\n  - {module: importer, class: Bad}\n",
         {
             "importer.py": """\
@@ -246,6 +291,65 @@ def test_failing_plugin_code_is_reported_and_skipped(builtin, tmp_path):
     assert "RuntimeError('bug')" in dict(reg.problems())["broken_detect"]
 
 
+CONNECTOR = """\
+    from contextlib import contextmanager
+
+    from pydantic import BaseModel
+
+    from hiro_budget.plugin_api import ParsedStatement, RemoteAccount
+
+
+    class Login(BaseModel):
+        user: str
+
+
+    class Session:
+        def accounts(self):
+            return [RemoteAccount("DE00123", "Konto", "giro", "DE00123")]
+
+        def fetch(self, account, start):
+            return ParsedStatement("demo_api", "", "", "giro", account.bank_id, incremental=True)
+
+
+    class DemoConnector:
+        name = "demo_api"
+        title = "Demo API"
+        secret = ""
+        login_model = Login
+        options_model = None
+        texts = {}
+
+        @contextmanager
+        def connect(self, login, options, secret, confirm):
+            yield Session()
+"""
+
+
+def test_connector_plugin(builtin, tmp_path):
+    """#82: a plugin's connector is found like an importer; a user plugin's only once
+    enabled (it is code); a broken one is a problem of its plugin."""
+    manifest = "name: {0}\nversion: '1'\napi: 2\nconnectors:\n  - {{module: api, class: {1}}}\n"
+    user = tmp_path / "user"
+    write_plugin(
+        user, "demo_api", manifest.format("demo_api", "DemoConnector"), {"api.py": CONNECTOR}
+    )
+    write_plugin(
+        builtin[0], "broken_api", manifest.format("broken_api", "Missing"), {"api.py": CONNECTOR}
+    )
+    reg = discover(user, builtin)
+    assert status(reg)["demo_api"] == ("user", "disabled")
+    assert reg.connectors() == []
+    assert "broken_api" in dict(reg.problems())
+
+    reg = discover(user, builtin, enabled=["demo_api"])
+    c = reg.connector("demo_api")
+    assert (c.title, [n for n in c.login_model.model_fields]) == ("Demo API", ["user"])
+    with c.connect(c.login_model(user="x"), None, "", None) as session:
+        (account,) = session.accounts()
+        assert session.fetch(account, None).incremental
+    assert reg.importers() == []  # a connector is no file importer
+
+
 def test_enricher_by_bank_code_or_institution(builtin):
     write_plugin(
         builtin[0],
@@ -253,7 +357,7 @@ def test_enricher_by_bank_code_or_institution(builtin):
         """\
         name: bank_common
         version: '1'
-        api: 1
+        api: 2
         enrichers:
           - {bank_codes: ['12345678'], institution: Demo Bank, function: texts:enrich}
         """,

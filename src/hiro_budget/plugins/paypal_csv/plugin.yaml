@@ -1,5 +1,5 @@
 name: paypal_csv
 version: 1.0.0
-api: 1
+api: 2
 description: PayPal activity download as CSV (German), linked to bank bookings
 formats: [format.csv.yaml]

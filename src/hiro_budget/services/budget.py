@@ -31,7 +31,8 @@ from __future__ import annotations
 
 import math
 from collections import defaultdict
-from dataclasses import dataclass, field
+from collections.abc import Iterator
+from dataclasses import dataclass, field, replace
 from datetime import date
 from typing import Literal
 
@@ -126,6 +127,7 @@ class CategoryMonth:
     def envelope(self) -> Envelope:
         if self.is_group:
             return Envelope("group", self.group_id)
+        assert self.category_id is not None  # only a group envelope has none
         return Envelope("category", self.category_id)
 
     @property
@@ -374,7 +376,7 @@ def _budget_lines(session: Session, settings: Settings) -> _Lines:
                 target=None if by_group else targets.get(c.key),
             )
             gm.categories.append(cm)
-            if by_group:
+            if gm.budget is not None:  # the group is budgeted as a whole
                 lines.of_category[c.id] = gm.budget.envelope
             else:
                 lines.envelopes.append(cm)
@@ -396,6 +398,7 @@ def _assignments(
         if category_id is not None:
             env = lines.of_category.get(category_id, Envelope("category", category_id))
         else:
+            assert group_id is not None  # an assignment has a category or a group
             env = lines.of_group.get(group_id, Envelope("group", group_id))
         result[(env, month)] += cents
     return result
@@ -430,7 +433,7 @@ class BudgetData:
             budget,
             account_anchors,
             _load_flows(session, start, budget, account_anchors),
-            [tuple(r) for r in rows],
+            [(c, g, m, a) for c, g, m, a in rows],
         )
 
 
@@ -472,6 +475,16 @@ def apply_target(c: CategoryMonth, month: str) -> None:
 # --- computation -------------------------------------------------------------------
 
 
+def _copy_lines(lines: _Lines) -> _Lines:
+    """Fresh line objects for one month (``compute_months`` fills and filters them)."""
+    groups = []
+    for g in lines.groups:
+        budget = replace(g.budget) if g.budget is not None else None
+        groups.append(replace(g, categories=[replace(c) for c in g.categories], budget=budget))
+    envelopes = [e for g in groups for e in g.envelopes]
+    return _Lines(groups, envelopes, lines.of_category, lines.of_group)
+
+
 def compute_month(
     session: Session,
     settings: Settings,
@@ -483,48 +496,91 @@ def compute_month(
     ``balances=False`` leaves out the account balances and the uncategorized amount
     (0), which take extra queries (reports that only need the envelopes)."""
     data = data or BudgetData.load(session, settings)
+    if months_between(data.start, month) < 0:
+        month = data.start
+    return next(compute_months(session, settings, month, month, data, balances))
+
+
+def compute_months(
+    session: Session,
+    settings: Settings,
+    first: str,
+    last: str,
+    data: BudgetData | None = None,
+    balances: bool = True,
+) -> Iterator[BudgetMonth]:
+    """The budgets of the months ``first`` to ``last`` (from the budget's start on) in one
+    pass: each month carries what is available into the next. Computing each month on
+    its own replayed every month before it, quadratic in the months (#59)."""
+    data = data or BudgetData.load(session, settings)
     start = data.start
-    if months_between(start, month) < 0:
-        month = start
     flows = data.flows
     lines = _budget_lines(session, settings)
     assigned = _assignments(data.assignments, lines)
-    envelopes = lines.envelopes
+    keys = [e.envelope for e in lines.envelopes]
 
     activity: dict[tuple[Envelope, str], int] = defaultdict(int)
     for (cat_id, m), cents in flows.activity.items():
         activity[(lines.of_category[cat_id], m)] += cents
+    assigned_total = sum(assigned.values())
+    assigned_by_month: dict[str, int] = defaultdict(int)
+    for (_e, m), v in assigned.items():
+        assigned_by_month[m] += v
 
-    available = {e.envelope: 0 for e in envelopes}
-    overspent_before = 0  # overspending of months before ``month``
+    available = dict.fromkeys(keys, 0)
+    overspent_before = 0  # overspending of months before the current one
     overspent_prev = 0
     inflow_total = 0
     current = start
-    while True:
+    while current <= last:
         overspent_this = 0
-        is_target = current == month
-        for e in envelopes:
-            env = e.envelope
+        numbers = []  # (carry, assigned, activity, available) per envelope
+        for env in keys:
             carry = max(available[env], 0)
             a = assigned.get((env, current), 0)
             act = activity.get((env, current), 0)
             available[env] = carry + a + act
             overspent_this += min(available[env], 0)
-            if is_target:
-                e.carry, e.assigned, e.activity = carry, a, act
-                e.available = available[env]
+            numbers.append((carry, a, act, available[env]))
         inflow_total += flows.inflow.get(current, 0)
-        if is_target:
-            break
+        if current >= first:
+            yield _month(
+                session,
+                data,
+                _copy_lines(lines),
+                current,
+                numbers,
+                ready_to_assign=flows.start_funds
+                + inflow_total
+                + overspent_before
+                - assigned_total,
+                overspent_prev=overspent_prev,
+                assigned_future=sum(v for m, v in assigned_by_month.items() if m > current),
+                assigned_now=assigned_by_month.get(current, 0),
+                balances=balances,
+            )
         overspent_before += overspent_this
         overspent_prev = overspent_this
         current = month_add(current, 1)
 
-    assigned_total = sum(assigned.values())
-    assigned_future = sum(v for (_e, m), v in assigned.items() if m > month)
-    assigned_now = sum(v for (_e, m), v in assigned.items() if m == month)
-    rta = flows.start_funds + inflow_total + overspent_before - assigned_total
-    inflow_now = flows.inflow.get(month, 0)
+
+def _month(
+    session: Session,
+    data: BudgetData,
+    lines: _Lines,
+    month: str,
+    numbers: list[tuple[int, int, int, int]],
+    *,
+    ready_to_assign: int,
+    overspent_prev: int,
+    assigned_future: int,
+    assigned_now: int,
+    balances: bool,
+) -> BudgetMonth:
+    flows = data.flows
+    envelopes = lines.envelopes
+    for e, (carry, a, act, avail) in zip(envelopes, numbers, strict=True):
+        e.carry, e.assigned, e.activity, e.available = carry, a, act, avail
     carried_in = sum(e.carry for e in envelopes)
 
     for e in envelopes:
@@ -533,6 +589,7 @@ def compute_month(
     for g in lines.groups:
         if g.budget is not None:  # categories show their own activity only
             for c in g.categories:
+                assert c.category_id is not None  # category lines of the group
                 c.activity = flows.activity.get((c.category_id, month), 0)
         g.categories = [
             c for c in g.categories if not c.hidden or c.assigned or c.activity or c.available
@@ -546,9 +603,9 @@ def compute_month(
     unc = flows.uncategorized.get(month, [])
     return BudgetMonth(
         month=month,
-        start_month=start,
-        ready_to_assign=rta,
-        inflow=inflow_now,
+        start_month=data.start,
+        ready_to_assign=ready_to_assign,
+        inflow=flows.inflow.get(month, 0),
         overspent_last_month=overspent_prev,
         assigned_in_future=assigned_future,
         balance_last_month=(budget_balance(session, month_add(month, -1), data) if balances else 0),
@@ -564,11 +621,11 @@ def compute_month(
 def _uncategorized_amount(session: Session, tx_ids: list[int]) -> int:
     if not tx_ids:
         return 0
-    return session.scalar(
+    return session.execute(
         select(func.coalesce(func.sum(Split.amount_cents), 0)).where(
             Split.transaction_id.in_(set(tx_ids)), Split.category_id.is_(None)
         )
-    )
+    ).scalar_one()
 
 
 def budget_balance(session: Session, month: str, data: BudgetData | None = None) -> int:
@@ -584,7 +641,7 @@ def budget_balance(session: Session, month: str, data: BudgetData | None = None)
         )
         if a.date is not None:
             q = q.where(Transaction.booking_date >= a.date)
-        total += a.base_cents + session.scalar(q)
+        total += a.base_cents + session.execute(q).scalar_one()
     return total
 
 
@@ -641,11 +698,17 @@ def move_money(
 def assignments_of(session: Session, month: str) -> dict[Envelope, int]:
     """Everything assigned in ``month`` (for undo/redo)."""
     return {
-        Envelope("category", a.category_id)
-        if a.category_id is not None
-        else Envelope("group", a.group_id): a.amount_cents
+        _envelope_of(a): a.amount_cents
         for a in session.scalars(select(BudgetAssignment).where(BudgetAssignment.month == month))
     }
+
+
+def _envelope_of(a: BudgetAssignment) -> Envelope:
+    """An assignment's envelope: its category, else its group (one of them is set)."""
+    if a.category_id is not None:
+        return Envelope("category", a.category_id)
+    assert a.group_id is not None
+    return Envelope("group", a.group_id)
 
 
 def restore_assignments(session: Session, month: str, amounts: dict[Envelope, int]) -> None:
@@ -667,10 +730,7 @@ def copy_last_month(session: Session, settings: Settings, month: str) -> int:
     previous = session.scalars(select(BudgetAssignment).where(BudgetAssignment.month == prev))
     count = 0
     for a in previous:
-        if a.category_id is not None:
-            env = Envelope("category", a.category_id)
-        else:
-            env = Envelope("group", a.group_id)
+        env = _envelope_of(a)
         if get_assigned(session, month, env) == 0 and a.amount_cents:
             set_assigned(session, month, env, a.amount_cents)
             count += 1

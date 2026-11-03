@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontMetrics
+from PySide6.QtGui import QFontMetrics, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -67,6 +67,12 @@ class BreakdownDialog(QDialog):
         self.tree.setUniformRowHeights(True)
         self.tree.itemDoubleClicked.connect(self._double_clicked)
         self.tree.currentItemChanged.connect(self._selection_changed)
+        # Return opens a booking or folds a category; without this the tree passes the
+        # key on and the dialog's Close button closes the dialog (#64)
+        for key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            QShortcut(QKeySequence(key), self.tree, self._return_pressed).setContext(
+                Qt.ShortcutContext.WidgetShortcut
+            )
         self._fill()
 
         self.total = QLabel(self._total_text())
@@ -208,6 +214,15 @@ class BreakdownDialog(QDialog):
     def _double_clicked(self, item: QTreeWidgetItem, _column: int) -> None:
         if item.data(0, TX_ROLE) is not None:
             self._open(item)
+
+    def _return_pressed(self) -> None:
+        item = self.tree.currentItem()
+        if item is None:
+            return
+        if item.data(0, TX_ROLE) is not None:
+            self._open(item)
+        elif item.childCount():
+            item.setExpanded(not item.isExpanded())
 
     def _open(self, item: QTreeWidgetItem | None) -> None:
         tx_id = item.data(0, TX_ROLE) if item is not None else None

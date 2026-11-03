@@ -1,15 +1,20 @@
 # Writing a plugin
 
 Everything the app imports comes from plugins: the built-in importers for ING, Revolut and
-PayPal as well as importers for other banks and payment services, written by you or
-contributed by others. This guide is for writing one. For an AI assistant that writes an
-importer from a sample of your statement, see [plugins.llm.md](plugins.llm.md).
+PayPal, the online banking connection (FinTS), as well as importers for other banks and
+payment services, written by you or contributed by others. This guide is for writing one.
+For an AI assistant that writes an importer from a sample of your statement, see
+[plugins.llm.md](plugins.llm.md).
 
 | What you want to import | What to write | Guide |
 |---|---|---|
 | a CSV export | a **format**: one YAML file, no programming | [csv-import.en.md](csv-import.en.md), [csv-formats.llm.md](csv-formats.llm.md) |
-| a PDF statement, or a CSV a format cannot describe | an **importer**: a Python class | this guide, [plugins.llm.md](plugins.llm.md) |
+| a PDF statement, or a CSV a format cannot describe | a **file importer**: a Python class | this guide, [plugins.llm.md](plugins.llm.md) |
+| bookings fetched from a bank's interface | a **connector**: a Python class | section 7 |
 | code several importers of one bank share | a **library** plugin | section 6 |
+
+All of them deliver the same thing, a `ParsedStatement` (section 4), and the app stores it
+the same way: balance check, duplicates, manual entries, categorization, import history.
 
 ---
 
@@ -26,12 +31,13 @@ config/plugins/musterbank_pdf/      your own plugin (built-in ones: src/hiro_bud
 ```yaml
 name: musterbank_pdf          # = the folder name: lower case letters, digits, _
 version: 1.0.0
-api: 1                        # the plugin API version (plugin_api.API_VERSION)
+api: 2                        # the plugin API version (plugin_api.API_VERSION)
 description: Musterbank Kontoauszug as PDF
 requires: []                  # other plugins this one uses (section 6)
-importers:                    # Python classes: module (file in the folder) and class
+importers:                    # file importers: module (file in the folder) and class
   - {module: importer, class: MusterbankPdfImporter}
 formats: []                   # CSV formats: *.csv.yaml files in the folder
+connectors: []                # bank connections, like importers (section 7)
 enrichers: []                 # see section 6
 ```
 
@@ -40,9 +46,10 @@ Unknown keys are errors: a misspelt key would otherwise be ignored silently.
 - **Built-in plugins** come with the app (`src/hiro_budget/plugins/`).
 - **Your plugins** are folders in `config/plugins/`. A plugin of yours with the name of a
   built-in one replaces it, e.g. to try a fix before a release.
-- **Plugins with program code** (importers, enrichers) of yours run only after you enabled
-  them in "Settings → Plugins…": a plugin runs with the rights of the app. Formats and
-  libraries without importers need no enabling.
+- **Plugins with program code** of yours (importers, connectors, enrichers, or any Python
+  file, also a library without importers) run only after you enabled them in "Settings →
+  Plugins…": a
+  plugin runs with the rights of the app. Plugins with formats only need no enabling.
 - "Settings → Plugins…" lists every plugin with its status and, for a plugin that is left
   out, the reason. "Read again" picks up changes without restarting the app.
 
@@ -110,7 +117,8 @@ importers show more cases:
 | `parse_german_amount("-1.234,56")` | `-123456` (cents) |
 | `module("plugin", "module")` | a module of a required plugin (section 6) |
 | `enricher_for(bank_code=…, institution=…)` | a bank's enricher (section 6) |
-| `API_VERSION` | the API version of the running app |
+| `RemoteAccount`, `Confirmation`, `LoginError`, `Offline`, `Cancelled`, `ConnectorError` | for connectors (section 7) |
+| `API_VERSION` | the API version of the running app (2) |
 
 ## 4. What the app does with the statement
 
@@ -129,6 +137,7 @@ All money is in **integer cents**; negative = money out.
 | `warnings` | shown in the import dialog (e.g. a row whose amount does not match the balance) |
 | `valuation`, `holdings` | securities account statements: the holdings on `period_end` instead of bookings |
 | `links`, `dedupe_scope`, `match_by_date_amount` | payment services and special duplicate handling (see the CSV engine) |
+| `incremental` | set by connectors (section 7): bookings from `period_start` on, `closing_balance_cents` the current balance |
 
 **`ParsedTransaction`**: `booking_date`, `amount_cents`, `booking_type` (required);
 `counterparty`, `purpose`, `value_date`, `mandate_ref`, `reference`, `merchant`,
@@ -142,8 +151,8 @@ make them equal to another source of the same account if possible (e.g. booking 
 the bank's other statements).
 
 **Then** the app checks overlaps with stored bookings (asks: add missing or overwrite),
-replaces matching manual entries, leaves out days fetched per FinTS, and categorizes (rules
-on counterparty, merchant, purpose, booking type; the classifier on these texts).
+replaces matching manual entries, leaves out days fetched by a connector, and categorizes
+(rules on counterparty, merchant, purpose, booking type; the classifier on these texts).
 
 ## 5. Try it
 
@@ -176,15 +185,69 @@ A plugin whose requirement is missing is left out with that reason.
 
 An **enricher** derives the merchant and card purchase date from a bank's booking texts:
 `function(counterparty, purpose, booking_date) -> (merchant, purchase_date)`. Register it in
-the manifest; FinTS uses it for fetched bookings of that bank code, CSV formats with
-`enrich: <institution>`:
+the manifest; the FinTS connector uses it for fetched bookings of that bank code, CSV formats
+with `enrich: <institution>`:
 
 ```yaml
 enrichers:
   - {bank_codes: ['50010517'], institution: ING, function: card_texts:enrich}
 ```
 
-## 7. Contribute it
+## 7. Connectors: fetching from a bank
+
+A connector fetches bookings and balances from a bank's interface instead of reading a file.
+The built-in `fints` plugin is one (FinTS 3.0 with PIN/TAN, e.g. ING): read it as the
+example. The manifest names the class under `connectors:`.
+
+The app owns everything the user sees; connector code never touches Qt. It declares its
+settings as **pydantic models**, and "Settings → Bank access…" draws a form from them (the
+fields' `title` as labels, `description` as placeholder or hint):
+
+```python
+from contextlib import contextmanager
+
+from pydantic import BaseModel, Field
+
+from hiro_budget.plugin_api import LoginError, ParsedStatement, RemoteAccount
+
+
+class MusterLogin(BaseModel):          # one login; saved in config.yaml (never the secret)
+    user: str = Field(min_length=1, title="User", description="as in the bank's app")
+
+
+class MusterbankConnector:
+    name = "musterbank_api"   # the importer of every fetch: never change it later
+    title = "Musterbank API"  # in the settings and the import history
+    secret = "PIN"            # asked at every connection, never stored ("" for none)
+    login_model = MusterLogin
+    options_model = None      # a model for settings shared by all logins, or None
+    texts = {"de": {"User": "Benutzer", "as in the bank's app": "wie in der App der Bank"}}
+
+    @contextmanager
+    def connect(self, login: MusterLogin, options, secret: str, confirm):
+        session = ...  # log in; raise LoginError for a wrong user/PIN (the app asks again)
+        yield session  # .accounts() -> [RemoteAccount], .fetch(account, start) -> ParsedStatement
+```
+
+- `connect` runs on a background thread. When the bank wants a confirmation, call
+  `confirm.tan(challenge)` (a TAN, None: cancelled) or poll with
+  `confirm.wait_for_app(challenge)` (False: cancelled; raise `Cancelled`).
+- Raise `LoginError` (the app asks for the secret again), `Offline` (no connection) or
+  `ConnectorError` (anything else, its message is shown).
+- `session.accounts()` lists the bank's accounts (`RemoteAccount`: `bank_id`, the IBAN or
+  the number its statements show; `product`; `kind`). In the settings the user picks the app
+  account each goes to and the first day to fetch ("Fetch from"; statements cover the days
+  before).
+- `session.fetch(account, start)` returns a `ParsedStatement` with `incremental=True`: the
+  bookings from `start` on (None: as far back as the bank allows), `period_end` and
+  `closing_balance_cents` the current balance. The app asks again for the last days at the
+  next fetch: keep booking texts stable so the duplicates are found, and equal to the bank's
+  statements where possible, so a fetch can replace bookings a statement delivered.
+- An optional `suggest(values) -> dict` fills in fields while the user types (FinTS: the
+  server and the login's `name` for a known bank code); a `field_validator` on the model
+  rejects wrong settings with a message (FinTS: only `https://` servers).
+
+## 8. Contribute it
 
 To have your importer in the app for everyone, open a pull request; see
 [CONTRIBUTING.md](../CONTRIBUTING.md). In short:

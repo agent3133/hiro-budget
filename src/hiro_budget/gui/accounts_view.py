@@ -5,8 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, Qt, Signal
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QCheckBox,
@@ -24,7 +23,6 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QSplitter,
     QStyledItemDelegate,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -32,11 +30,24 @@ from PySide6.QtWidgets import (
 
 from hiro_budget.app import App
 from hiro_budget.config import BUDGET_KINDS, OwnAccount, PatternMatch
-from hiro_budget.gui import theme
+from hiro_budget.gui import regex_help, shortcuts, theme
+from hiro_budget.gui.charts import (
+    add_line_tooltips,
+    attach,
+    chart_view,
+    line_series,
+    money_axis,
+    month_axis,
+    month_label,
+    new_chart,
+    set_chart,
+)
 from hiro_budget.gui.common import (
     accent_color,
     amount_color,
     fmt_date,
+    format_iban,
+    format_iban_input,
     from_qdate,
     money,
     show_error,
@@ -47,14 +58,17 @@ from hiro_budget.gui.holdings_dialog import HoldingsDialog
 from hiro_budget.gui.navigation import ICON_DELETE, ICON_DOWN, ICON_UP
 from hiro_budget.gui.widgets import (
     DetailCard,
+    Drop,
+    DropTree,
     action_bar,
     icon_button,
     page_title,
     paint_chip,
     primary,
+    revert_by_key,
 )
 from hiro_budget.services import accounts as acc_service
-from hiro_budget.services import config_edit
+from hiro_budget.services import config_edit, networth
 from hiro_budget.services.accounts import AccountBalance, Position, Positions
 
 KINDS = ["giro", "savings", "cash", "credit_card", "wallet", "depot", "loan"]
@@ -71,7 +85,8 @@ ACCOUNT_ROLE = Qt.ItemDataRole.UserRole + 1  # account name of account rows
 DRAFT_ROLE = Qt.ItemDataRole.UserRole + 2
 SORT_ROLE = Qt.ItemDataRole.UserRole + 3  # value to sort a column by (numbers, dates)
 RIGHT = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
-Drop = QAbstractItemView.DropIndicatorPosition
+BALANCE_MONTHS = 12  # the balance chart of the selected account
+BALANCE_CHART_HEIGHT = 200
 
 
 class AccountItem(QTreeWidgetItem):
@@ -90,20 +105,9 @@ class AccountItem(QTreeWidgetItem):
         return key(self) < key(other)
 
 
-class AccountTree(QTreeWidget):
+class AccountTree(DropTree):
     """Drag and drop of account rows: the view reorders its drafts and fills the table
-    again, so Qt must not move the rows itself."""
-
-    #: (dragged item, item under the cursor, drop indicator position)
-    dropped = Signal(QTreeWidgetItem, QTreeWidgetItem, Drop)
-
-    def dropEvent(self, event) -> None:
-        item = self.currentItem()
-        target = self.itemAt(event.position().toPoint())
-        if item is not None and target is not None and target is not item:
-            self.dropped.emit(item, target, self.dropIndicatorPosition())
-        event.setDropAction(Qt.DropAction.IgnoreAction)
-        event.accept()
+    again."""
 
 
 @dataclass
@@ -119,6 +123,7 @@ class AccountDraft:
     opening_date: date | None = None
     on_budget: bool | None = None  # None: default by kind
     transfer_category: str = ""
+    stale_hint: bool = True  # a note on the Overview when no booking came in for long
     original_name: str | None = None  # None: new account
     in_config: bool = True
     balance: AccountBalance | None = field(default=None, repr=False)
@@ -138,6 +143,7 @@ class AccountDraft:
             opening_date=a.opening_date,
             on_budget=a.on_budget,
             transfer_category=a.transfer_category or "",
+            stale_hint=a.stale_hint,
             original_name=a.name,
         )
 
@@ -163,6 +169,7 @@ class AccountDraft:
             opening_date=self.opening_date,
             on_budget=self.on_budget,
             transfer_category=self.transfer_category or None,
+            stale_hint=self.stale_hint,
         )
 
 
@@ -256,6 +263,8 @@ class AccountsView(QWidget):
     balances_changed = Signal(list)
     #: unsaved changes appeared (True) or were saved / discarded (False)
     dirty_changed = Signal(bool)
+    #: the bookings of an account (id), from a double-click on its balance chart
+    show_account_bookings = Signal(int)
 
     def __init__(self, app: App, parent=None) -> None:
         super().__init__(parent)
@@ -273,6 +282,27 @@ class AccountsView(QWidget):
             "loan": self.tr("Loan"),
         }
 
+        self._build_table()
+        cards_row = self._build_cards()
+        left = self._build_list()
+        editor = self._build_editor()
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(left)
+        splitter.addWidget(editor)
+        splitter.setStretchFactor(0, 3)
+        splitter.setStretchFactor(1, 2)
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.title)
+        layout.addSpacing(4)
+        layout.addLayout(cards_row)
+        layout.addSpacing(4)
+        layout.addWidget(splitter, 1)
+        self._connect_editor()
+        self.load()
+
+    def _build_table(self) -> None:
+        """The balance table: columns, sorting, drag and drop, its shortcuts."""
         # -- balance table (securities accounts expand to their positions) --
         self.table = AccountTree()
         self.table.setColumnCount(6)
@@ -294,13 +324,14 @@ class AccountsView(QWidget):
         self.table.setItemDelegateForColumn(COL_TYPE, TypeChipDelegate(self.table))
         self.table.currentItemChanged.connect(lambda *_: self._show_draft())
         # accounts whose positions are hidden
-        self.collapsed: set[str] = set(app.ui_state.get("accounts.collapsed", []))
+        self.collapsed: set[str] = set(self.app.ui_state.get("accounts.collapsed", []))
         self.table.itemCollapsed.connect(lambda i: self._account_toggled(i, False))
         self.table.itemExpanded.connect(lambda i: self._account_toggled(i, True))
         # order: drag and drop or up/down change the saved order; a click on a column
         # header only sorts the view (ascending, descending, back to the saved order)
         self._sort: tuple[int, Qt.SortOrder] | None = None
         self._saved_order: list[str] = []  # account names as saved (sidebar order)
+        self.stale = False  # balances changed while hidden: drawn when shown (#58)
         header = self.table.header()
         header.setSectionsClickable(True)
         header.setSortIndicatorShown(False)
@@ -308,10 +339,21 @@ class AccountsView(QWidget):
         self.table.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.table.setDropIndicatorShown(True)
         self.table.dropped.connect(self._dropped)
-        for key, delta in (("Alt+Up", -1), ("Alt+Down", 1)):
-            shortcut = QShortcut(QKeySequence(key), self.table)
-            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
-            shortcut.activated.connect(lambda delta=delta: self._move(delta))
+        page, on_list = (
+            Qt.ShortcutContext.WidgetWithChildrenShortcut,
+            Qt.ShortcutContext.WidgetShortcut,
+        )
+        for index, delta in ((0, -1), (1, 1)):
+            shortcuts.bind(
+                "item_move", self.table, lambda delta=delta: self._move(delta), page, index=index
+            )
+        shortcuts.bind("item_new", self, self._add, page)
+        shortcuts.bind("item_remove", self.table, self._remove, on_list)
+        shortcuts.bind("item_edit", self.table, self._edit_name, on_list)
+        shortcuts.bind("revert", self, lambda: revert_by_key(self, self.revert_button), page)
+
+    def _build_cards(self) -> QHBoxLayout:
+        """The page title and the sums per kind of account."""
         # -- header: page title and the sums per kind of account --
         self.title = page_title(self.tr("Accounts"))
         self.cards = {
@@ -326,19 +368,28 @@ class AccountsView(QWidget):
         for card in self.cards.values():
             cards_row.addWidget(card, 1)
         self.setFocusProxy(self.table)  # keyboard focus when the page is shown
+        return cards_row
 
+    def _build_list(self) -> QWidget:
+        """The left side: the table, the balance chart and the actions below."""
         add = QPushButton(self.tr("New account"))
+        add.setToolTip(shortcuts.tip(self.tr("New account"), "item_new"))
         add.clicked.connect(self._add)
-        self.remove_button = icon_button(ICON_DELETE, "✕", self.tr("Remove account"), self._remove)
+        self.remove_button = icon_button(
+            ICON_DELETE, "✕", shortcuts.tip(self.tr("Remove account"), "item_remove"), self._remove
+        )
         self.book_button = QPushButton(self.tr("New booking in this account…"))
         self.book_button.clicked.connect(self._new_booking)
         self.holdings_button = QPushButton(self.tr("Holdings…"))
         self.holdings_button.clicked.connect(self._show_holdings)
         self.up_button = icon_button(
-            ICON_UP, "↑", self.tr("Move up (Alt+↑)"), lambda: self._move(-1)
+            ICON_UP, "↑", shortcuts.tip(self.tr("Move up"), "item_move", 0), lambda: self._move(-1)
         )
         self.down_button = icon_button(
-            ICON_DOWN, "↓", self.tr("Move down (Alt+↓)"), lambda: self._move(1)
+            ICON_DOWN,
+            "↓",
+            shortcuts.tip(self.tr("Move down"), "item_move", 1),
+            lambda: self._move(1),
         )
         left_buttons = action_bar(
             [add, self.book_button, self.holdings_button],
@@ -349,8 +400,18 @@ class AccountsView(QWidget):
         left_layout = QVBoxLayout(left)
         left_layout.setContentsMargins(0, 0, 0, 0)
         left_layout.addWidget(self.table, 1)
+        # the selected account's balance over the last 12 months (#45)
+        self.balance_chart = chart_view(new_chart(""))
+        self.balance_chart.setFixedHeight(BALANCE_CHART_HEIGHT)
+        self.balance_chart.setToolTip(self.tr("Double-click: the bookings of the account"))
+        self.balance_chart.viewport().installEventFilter(self)
+        self._chart_account: int | None = None
+        left_layout.addWidget(self.balance_chart)
         left_layout.addLayout(left_buttons)
+        return left
 
+    def _build_editor(self) -> DetailCard:
+        """The account settings card: the fields (scrolling) and save / revert."""
         # -- editor --
         self.name = QLineEdit()
         self.kind = QComboBox()
@@ -367,6 +428,13 @@ class AccountsView(QWidget):
             self.tr(
                 "Money in budget accounts must be assigned to categories. Loans and "
                 "securities accounts are usually tracking accounts (balance only)."
+            )
+        )
+        self.stale_hint = QCheckBox(self.tr("Note on the Overview when no bookings come in"))
+        self.stale_hint.setToolTip(
+            self.tr(
+                "After 5 weeks without a booking or statement (cash: 6 weeks, securities "
+                "account: a quarter). Turn it off for closed accounts."
             )
         )
         self.has_opening = QCheckBox()  # in the row "Opening balance", before the amount
@@ -386,6 +454,8 @@ class AccountsView(QWidget):
         opening_row.addWidget(self.opening_date)
         self.counterparty = QLineEdit(placeholderText=self.tr("Regex, e.g. (?i)extra-konto"))
         self.purpose = QLineEdit(placeholderText=self.tr("Regex on purpose text"))
+        regex_help.attach(self.counterparty)
+        regex_help.attach(self.purpose)
         self.transfer_category = QComboBox()
         self.transfer_category.setToolTip(
             self.tr(
@@ -405,6 +475,7 @@ class AccountsView(QWidget):
         form.addRow(self.tr("IBAN / No."), self.iban)
         form.addRow(self.tr("E-mail"), self.email)
         form.addRow(self.tr("Budget"), self.on_budget)
+        form.addRow(self.tr("Reminder"), self.stale_hint)
         form.addRow(self.tr("Opening balance"), opening_row)
         transfer_box = QGroupBox(self.tr("Recognize transfers to this account"))
         transfer_form = QFormLayout(transfer_box)
@@ -448,19 +519,13 @@ class AccountsView(QWidget):
         editor_layout = editor.body
         editor_layout.addWidget(scroll, 1)
         editor_layout.addLayout(save_row)
+        return editor
 
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(left)
-        splitter.addWidget(editor)
-        splitter.setStretchFactor(0, 3)
-        splitter.setStretchFactor(1, 2)
-        layout = QVBoxLayout(self)
-        layout.addWidget(self.title)
-        layout.addSpacing(4)
-        layout.addLayout(cards_row)
-        layout.addSpacing(4)
-        layout.addWidget(splitter, 1)
-
+    def _connect_editor(self) -> None:
+        """Every edit of a field updates the draft of the selected account."""
+        # IBANs are grouped while typing or pasting (before the draft takes the text); saving
+        # stores them normalized
+        self.iban.textEdited.connect(self._group_iban)
         for edit in (
             self.name,
             self.institution,
@@ -473,10 +538,10 @@ class AccountsView(QWidget):
         self.kind.currentIndexChanged.connect(self._form_changed)
         self.transfer_category.currentIndexChanged.connect(self._form_changed)
         self.has_opening.toggled.connect(self._form_changed)
+        self.stale_hint.toggled.connect(self._form_changed)
         self.on_budget.toggled.connect(self._budget_toggled)
         self.opening_balance.valueChanged.connect(self._form_changed)
         self.opening_date.dateChanged.connect(self._form_changed)
-        self.load()
 
     # -- loading ---------------------------------------------------------------
 
@@ -514,13 +579,25 @@ class AccountsView(QWidget):
         self._fill_table(0)
         self._set_dirty(False)
 
-    def reload_balances(self) -> None:
-        """Refresh balances after bookings changed, keeping unsaved edits."""
+    def reload_balances(self, redraw: bool = True) -> None:
+        """Refresh balances after bookings changed, keeping unsaved edits.
+
+        ``redraw=False`` (the page is hidden): only the numbers and the sidebar; the table
+        and the balance chart (~90 ms) are drawn again when the page is shown (#58)."""
         balances, positions = self._load_balances()
         for d in self.drafts:
             d.balance = balances.get(d.original_name or "")
             d.positions = positions.get(d.original_name or "")
-        self._fill_table(self._current_index())
+        if redraw:
+            self._fill_table(self._current_index())
+        else:
+            self.stale = True
+            self.balances_changed.emit(self.balance_list())
+
+    def showEvent(self, event) -> None:
+        if self.stale:
+            self._fill_table(self._current_index())
+        super().showEvent(event)
 
     def _load_balances(self) -> tuple[dict[str, AccountBalance], dict[str, Positions]]:
         with self.app.session() as s:
@@ -535,6 +612,7 @@ class AccountsView(QWidget):
         return balances, positions
 
     def _fill_table(self, select: int) -> None:
+        self.stale = False
         self._loading = True
         self.table.clear()
         total = 0
@@ -800,12 +878,53 @@ class AccountsView(QWidget):
     def has_unsaved_changes(self) -> bool:
         return self.save_button.isEnabled()
 
+    def _draw_balance_chart(self, d: AccountDraft | None) -> None:
+        """Month-end balances of the selected account over the last 12 months."""
+        account = d.balance.account_id if d is not None and d.balance is not None else None
+        self._chart_account = account
+        chart = new_chart(
+            self.tr("Balance of %1, last 12 months").replace("%1", d.name) if d else ""
+        )
+        chart.legend().hide()
+        if account is not None:
+            with self.app.session() as s:
+                worth = networth.net_worth(s, f"{date.today():%Y-%m}", account)
+            history = worth.accounts[0] if worth.accounts else None
+            months = [m for m in worth.months[-(BALANCE_MONTHS + 1) :]]
+            points = (
+                [(m, history.balances[m]) for m in months if history.balances.get(m) is not None]
+                if history
+                else []
+            )
+            if points:
+                values = [cents / 100 for _, cents in points]
+                line = line_series(d.name, values, accent_color())
+                add_line_tooltips(line, [month_label(m) for m, _ in points])
+                attach(
+                    chart,
+                    line,
+                    month_axis([m for m, _ in points]),
+                    money_axis(values, tight=True, intervals=3),
+                )
+        set_chart(self.balance_chart, chart)
+
+    def eventFilter(self, obj, event) -> bool:
+        if (
+            obj is self.balance_chart.viewport()
+            and event.type() == QEvent.Type.MouseButtonDblClick
+            and self._chart_account is not None
+        ):
+            self.show_account_bookings.emit(self._chart_account)
+            return True
+        return super().eventFilter(obj, event)
+
     def _show_draft(self) -> None:
         if self._loading:
             return
         self._update_order_controls()
         d = self._current()
         self.editor.set_heading(d.name if d else "")
+        self._draw_balance_chart(d)
         self._loading = True
         enabled = d is not None
         for w in (
@@ -815,6 +934,7 @@ class AccountsView(QWidget):
             self.iban,
             self.email,
             self.on_budget,
+            self.stale_hint,
             self.has_opening,
             self.counterparty,
             self.purpose,
@@ -833,9 +953,10 @@ class AccountsView(QWidget):
             self.name.setText(d.name)
             self.kind.setCurrentIndex(max(0, self.kind.findData(d.kind)))
             self.institution.setText(d.institution)
-            self.iban.setText(d.iban)
+            self.iban.setText(format_iban(d.iban))
             self.email.setText(d.email)
             self.on_budget.setChecked(d.is_on_budget)
+            self.stale_hint.setChecked(d.stale_hint)
             self.counterparty.setText(d.counterparty)
             self.purpose.setText(d.purpose)
             self.transfer_category.setCurrentIndex(
@@ -883,6 +1004,7 @@ class AccountsView(QWidget):
         d.counterparty = self.counterparty.text()
         d.purpose = self.purpose.text()
         d.transfer_category = self.transfer_category.currentData() or ""
+        d.stale_hint = self.stale_hint.isChecked()
         self.transfer_category.setEnabled(not d.is_on_budget)
         if self.has_opening.isChecked():
             d.opening_balance = round(self.opening_balance.value(), 2)
@@ -893,6 +1015,12 @@ class AccountsView(QWidget):
         item.setText(COL_NAME, d.name)
         item.setText(COL_TYPE, self.kind_labels.get(d.kind, d.kind))
         self._set_dirty(True)
+
+    def _group_iban(self, text: str) -> None:
+        grouped, cursor = format_iban_input(text, self.iban.cursorPosition())
+        if grouped != text:
+            self.iban.setText(grouped)  # emits no textEdited
+            self.iban.setCursorPosition(cursor)
 
     def _budget_toggled(self, checked: bool) -> None:
         if self._loading:
@@ -915,6 +1043,13 @@ class AccountsView(QWidget):
         )
         self._fill_table(len(self.drafts) - 1)
         self._set_dirty(True)
+        self._edit_name()
+
+    def focus_regions(self) -> list[QWidget]:
+        """F6: the list, the account's settings."""
+        return [self.table, self.name]
+
+    def _edit_name(self) -> None:
         self.name.setFocus()
         self.name.selectAll()
 

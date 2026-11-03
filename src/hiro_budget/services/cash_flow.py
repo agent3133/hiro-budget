@@ -225,7 +225,7 @@ def _split_middle(nodes: list[Node], sources: list[int], targets: list[int]) -> 
     total = sum(nodes[t].cents for t in targets)
     if not total:
         return []
-    links = []
+    links: list[Link] = []
     for s in sources:
         cents = nodes[s].cents
         shares = [cents * nodes[t].cents // total for t in targets]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -17,12 +19,14 @@ from PySide6.QtGui import (
     QPalette,
 )
 from PySide6.QtWidgets import QApplication, QComboBox, QMessageBox, QTableView, QWidget
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from hiro_budget.db.models import Account, Category, CategoryGroup
+from hiro_budget.db.models import Category
 from hiro_budget.gui import theme
 from hiro_budget.money import format_cents
+from hiro_budget.services import lookups
+
+log = logging.getLogger(__name__)
 
 _language = "de"
 
@@ -52,6 +56,32 @@ def fmt_date(d: date | None) -> str:
     if d is None:
         return ""
     return d.strftime("%d.%m.%Y") if _language == "de" else d.isoformat()
+
+
+_IBAN = re.compile(r"[A-Z]{2}\d{2}[A-Z0-9]{8,30}")
+
+
+def format_iban(text: str) -> str:
+    """An IBAN in groups of four (``DE12 3456 …``); anything else (depot or account numbers)
+    unchanged. Stored values stay normalized (``config.normalize_iban``)."""
+    compact = text.replace(" ", "").upper()
+    if not _IBAN.fullmatch(compact):
+        return text
+    return " ".join(compact[i : i + 4] for i in range(0, len(compact), 4))
+
+
+_IBAN_START = re.compile(r"[A-Z]{2}\d{2}[A-Z0-9]*")
+
+
+def format_iban_input(text: str, cursor: int) -> tuple[str, int]:
+    """While typing: text that starts like an IBAN (two letters, two digits) in groups of four,
+    and the cursor after the same character as before. Anything else unchanged."""
+    compact = text.replace(" ", "").upper()
+    if not _IBAN_START.fullmatch(compact):
+        return text, cursor
+    grouped = " ".join(compact[i : i + 4] for i in range(0, len(compact), 4))
+    before = len(text[:cursor].replace(" ", ""))  # characters left of the cursor
+    return grouped, before + max(0, before - 1) // 4
 
 
 def to_qdate(d: date) -> QDate:
@@ -100,12 +130,7 @@ def is_dark() -> bool:
 
 
 def amount_color(cents: int) -> QColor:
-    t = theme.tokens()
-    if t is not None:
-        return QColor(t["neg_text"] if cents < 0 else t["pos_text"])
-    if cents < 0:
-        return QColor("#ff8a80") if is_dark() else QColor("#b3261e")
-    return QColor("#81c995") if is_dark() else QColor("#1e7b34")
+    return QColor(theme.color("neg_text" if cents < 0 else "pos_text"))
 
 
 def group_colors(session: Session) -> dict[int, str]:
@@ -115,11 +140,7 @@ def group_colors(session: Session) -> dict[int, str]:
     if t is None:
         return {}
     pages = t["pages"]
-    ids = session.scalars(
-        select(CategoryGroup.id)
-        .where(CategoryGroup.is_income.is_(False))
-        .order_by(CategoryGroup.sort, CategoryGroup.id)
-    ).all()
+    ids = lookups.expense_group_ids(session)
     return {group_id: pages[i % len(pages)] for i, group_id in enumerate(ids)}
 
 
@@ -131,10 +152,11 @@ def highlight_color() -> QColor:
 
 
 def warning_color() -> QColor:
-    t = theme.tokens()
-    if t is not None:
-        return QColor(t["warn_text"])
-    return QColor("#ffb74d") if is_dark() else QColor("#a15c00")
+    return QColor(theme.color("warn_text"))
+
+
+def error_color() -> QColor:
+    return QColor(theme.color("neg_text"))
 
 
 @dataclass
@@ -149,9 +171,7 @@ class Choice:
 
 
 def category_choices(session: Session, *, include_transfers: bool = True) -> list[Choice]:
-    groups = session.scalars(
-        select(CategoryGroup).where(CategoryGroup.hidden.is_(False)).order_by(CategoryGroup.sort)
-    )
+    groups = lookups.visible_groups(session)
     out: list[Choice] = []
     for g in groups:
         out.append(Choice(g.name, is_group_header=True, group_id=g.id))
@@ -159,7 +179,7 @@ def category_choices(session: Session, *, include_transfers: bool = True) -> lis
             if not c.hidden:
                 out.append(Choice(f"    {c.name}", category_id=c.id))
     if include_transfers:
-        accounts = session.scalars(select(Account).where(Account.is_own).order_by(Account.name))
+        accounts = lookups.own_accounts(session)
         out.append(
             Choice(
                 QCoreApplication.translate("common", "Transfer to own account"),
@@ -167,7 +187,7 @@ def category_choices(session: Session, *, include_transfers: bool = True) -> lis
             )
         )
         for a in accounts:
-            out.append(Choice(f"    ⇄ {a.name}", transfer_account_id=a.id))
+            out.append(Choice(f"    ↔ {a.name}", transfer_account_id=a.id))
     return out
 
 
@@ -217,7 +237,7 @@ def select_choice(combo: QComboBox, category_id: int | None, transfer_id: int | 
 
 
 def category_lookup(session: Session) -> dict[int, Category]:
-    return {c.id: c for c in session.scalars(select(Category))}
+    return lookups.categories_by_id(session)
 
 
 def learning_text() -> str:
@@ -242,4 +262,11 @@ def busy(show: Callable[[str], None], text: str) -> Iterator[None]:
 
 
 def show_error(parent: QWidget | None, title: str, error: Exception | str) -> None:
-    QMessageBox.critical(parent, title, str(error))
+    """The error in a message box, and with its traceback in the log (file, #79)."""
+    if isinstance(error, BaseException):
+        log.error("%s: %r", title, error, exc_info=error)
+        text = str(error) or type(error).__name__  # str(KeyError()) is ""
+    else:
+        log.error("%s: %s", title, error)
+        text = error
+    QMessageBox.critical(parent, title, text)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QFontMetrics
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -31,7 +32,7 @@ class ImportHistoryDialog(QDialog):
         self.deleted_any = False
         self.batches: list[BatchInfo] = []
         self.setWindowTitle(self.tr("Import history"))
-        fit_to_screen(self, 950, 450)
+        fit_to_screen(self, 1250, 520)  # file names and all headers fit
 
         self.table = QTableWidget(0, 7)
         flat_table(self.table)
@@ -46,6 +47,9 @@ class ImportHistoryDialog(QDialog):
                 self.tr("Manually edited"),
             ]
         )
+        # no word wrap: it broke file names at "-" and elided the rest ("Extra-…")
+        self.table.setWordWrap(False)
+        self.table.setTextElideMode(Qt.TextElideMode.ElideMiddle)  # keeps the date at the end
         self.table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
         self.table.verticalHeader().setVisible(False)
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -97,14 +101,29 @@ class ImportHistoryDialog(QDialog):
             for col, text in enumerate(cells):
                 item = QTableWidgetItem(text)
                 item.setData(ID_ROLE, b.id)
+                if col == 1:
+                    item.setToolTip(text)  # the full name, when it is cut
                 if col >= 4:
                     item.setTextAlignment(
                         Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
                     )
                 self.table.setItem(i, col, item)
-        self.table.resizeColumnToContents(0)
-        self.table.resizeColumnToContents(3)
+        self._fit_columns()
         self._update_buttons()
+
+    def _fit_columns(self) -> None:
+        """Every column but the file name as wide as its header and cells (QFontMetrics:
+        sizeHintForColumn is slow through the stylesheet); the file name gets the rest."""
+        table = self.table
+        cells = QFontMetrics(table.font())
+        header = QFontMetrics(table.horizontalHeader().font())
+        for col in range(table.columnCount()):
+            if col == 1:
+                continue
+            width = header.horizontalAdvance(table.horizontalHeaderItem(col).text()) + 32
+            for row in range(table.rowCount()):
+                width = max(width, cells.horizontalAdvance(table.item(row, col).text()) + 20)
+            table.setColumnWidth(col, width)
 
     def _selected(self) -> BatchInfo | None:
         rows = self.table.selectionModel().selectedRows()

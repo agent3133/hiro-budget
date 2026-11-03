@@ -111,8 +111,9 @@ def _matches(f: CsvFilter, cols: _Columns, row: list[str]) -> bool:
 
 
 def _chain_breaks(rows: list[_Row]) -> int:
+    """Rows whose balance does not follow from the one before (rows with a balance)."""
     return sum(
-        a.balance_cents + b.amount_cents != b.balance_cents
+        a.balance_cents is not None and a.balance_cents + b.amount_cents != b.balance_cents
         for a, b in zip(rows, rows[1:], strict=False)
     )
 
@@ -208,7 +209,10 @@ class CsvImporter:
         warnings: list[str] = []
         if i_balance is not None:
             for a, b in zip(rows, rows[1:], strict=False):
-                if a.balance_cents + b.amount_cents != b.balance_cents:
+                if (
+                    a.balance_cents is not None
+                    and a.balance_cents + b.amount_cents != b.balance_cents
+                ):
                     warnings.append(
                         f"line {b.line}: amount {b.amount_cents / 100:.2f} does not match the "
                         "balance change"
@@ -232,6 +236,7 @@ class CsvImporter:
         )
         if i_balance is not None:
             first, last = rows[0], rows[-1]
+            assert first.balance_cents is not None and last.balance_cents is not None
             stmt.opening_balance_cents = first.balance_cents - first.amount_cents
             # the skipped rows (pending) are not in the bookings yet
             stmt.closing_balance_cents = last.balance_cents - sum(r.amount_cents for r in skipped)

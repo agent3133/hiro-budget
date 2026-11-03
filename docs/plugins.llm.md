@@ -3,7 +3,9 @@
 This file is written for a large language model that helps a user of the Family Finance
 Analyser write an **importer plugin** (Python) for a bank or payment service, usually for its
 PDF statements. People read [plugins.md](plugins.md). For a CSV export, a format without code
-is enough: use [csv-formats.llm.md](csv-formats.llm.md) instead.
+is enough: use [csv-formats.llm.md](csv-formats.llm.md) instead. A connection to a bank's
+interface (a *connector*, like the built-in FinTS plugin) is described in plugins.md,
+section 7; this file covers file importers only.
 
 ## For the user: how to use this file
 
@@ -94,7 +96,7 @@ domains in tests (`tests/test_privacy.py`).
    `purpose`, `booking_type`. A good `counterparty` (the payee) and `merchant` (for card
    payments: the shop) make categorization work.
 
-## 4. The API (`from hiro_budget.plugin_api import …`, `api: 1`)
+## 4. The API (`from hiro_budget.plugin_api import …`, `api: 2`)
 
 Import nothing else from `hiro_budget`. The standard library and `pdfplumber` (through
 the helpers) are available; do not add other third-party packages.
@@ -150,7 +152,7 @@ Manifest (`plugin.yaml`), unknown keys rejected:
 ```yaml
 name: musterbank_pdf          # = folder name; [a-z][a-z0-9_]*
 version: 1.0.0
-api: 1
+api: 2
 description: Musterbank Kontoauszug as PDF
 importers:
   - {module: importer, class: MusterbankPdfImporter}

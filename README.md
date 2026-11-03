@@ -48,9 +48,10 @@ Importers for more banks are very welcome: see [CONTRIBUTING.md](CONTRIBUTING.md
 
 ## How to use it
 
-Month by month (import, first budget, monthly review, next month, analysis):
-[docs/workflows.en.md](docs/workflows.en.md), auf Deutsch
-[docs/workflows.de.md](docs/workflows.de.md). The app speaks German and English.
+Month by month (import, first budget, monthly review, next month, analysis), with
+screenshots of each step: [docs/workflows.en.md](docs/workflows.en.md), auf Deutsch
+[docs/workflows.de.md](docs/workflows.de.md). The same guide is in the app under
+"Help → User guide". The app speaks German and English.
 
 ## Features
 
@@ -79,9 +80,11 @@ Month by month (import, first budget, monthly review, next month, analysis):
   waits and is linked after the next import or fetch. Adding a format for another bank:
   [docs/csv-import.en.md](docs/csv-import.en.md) (German: [csv-import.de.md](docs/csv-import.de.md));
   with the help of an AI assistant: [docs/csv-formats.llm.md](docs/csv-formats.llm.md)
-- **Plugins**: every importer is a plugin (built-in ones in `src/hiro_budget/plugins/`,
-  own ones in `config/plugins/`, listed under Settings → Plugins…; own plugins with program
-  code run only when enabled there). Writing an importer for another bank:
+- **Plugins**: every way bookings come in is a plugin, PDF and CSV importers as well as the
+  online banking connection (FinTS), all through one interface (built-in ones in
+  `src/hiro_budget/plugins/`, own ones in `config/plugins/`, listed under Settings →
+  Plugins…; own plugins with program code run only when enabled there). Writing an importer
+  or a bank connection for another bank:
   [docs/plugins.md](docs/plugins.md); with an AI assistant:
   [docs/plugins.llm.md](docs/plugins.llm.md); contributing it: [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Categorization**: transfers between own accounts, automatic mortgage split
@@ -337,6 +340,16 @@ Create backup* makes one by hand, *File → Open backup folder* shows them. To r
 close the app and copy the files of a backup back (the database into `data/`, the YAML
 files into `config/`).
 
+To keep the data in a cloud or NAS folder, *Settings → Data folder…* moves the database,
+the classifier, the backups and the view settings there together (setting `data_folder` in
+`config.yaml`) and restarts the app on it.
+
+## Log file
+
+The app writes warnings and errors, with their tracebacks, to `data/logs/hiro-budget.log`
+(in the data folder; 1 MB, the three previous files are kept). *Help → Open log folder*
+shows it; attach it to a bug report. Bank texts are not logged at this level.
+
 ## Privacy
 
 Statements and the database contain personal data. `input/`, `data/`, `*.db`, the
@@ -349,6 +362,7 @@ configuration is committed.
 uv run pytest                 # tests (GUI tests run headless)
 uv run ruff check src tests   # lint
 uv run ruff format src tests  # format
+uv run mypy                   # type check of services, importers, db, config
 ```
 
 - Tests use synthetic statement data (`tests/fixtures`) and a generated PDF. If real
@@ -357,23 +371,30 @@ uv run ruff format src tests  # format
   `uv run alembic revision --autogenerate -m "..."`. The app migrates the database
   on startup.
 - Translations: after changing UI strings, run
-  `uv run pyside6-lupdate src/hiro_budget/gui/*.py src/hiro_budget/gui/models/*.py -ts src/hiro_budget/i18n/app_de.ts src/hiro_budget/i18n/app_en.ts`,
+  `uv run pyside6-lupdate src/hiro_budget/gui/*.py src/hiro_budget/gui/models/*.py src/hiro_budget/gui/reports/*.py -ts src/hiro_budget/i18n/app_de.ts src/hiro_budget/i18n/app_en.ts`,
   translate with `uv run pyside6-linguist src/hiro_budget/i18n/app_de.ts`, then
   `uv run pyside6-lrelease src/hiro_budget/i18n/app_de.ts src/hiro_budget/i18n/app_en.ts`.
-- New statement sources (other banks, broker, mortgage): implement the `Importer`
-  protocol in `src/hiro_budget/importers/` and register it in `importers/base.py`.
-  A source that lists holdings instead of bookings returns a statement with
+- Screenshots come from the demo (`uv run hiro-budget demo`), never from real data. Look at
+  each image before committing it.
+- New statement sources (other banks, broker, mortgage): a plugin, a folder with
+  `plugin.yaml` and a CSV format or an importer ([docs/plugins.md](docs/plugins.md); the
+  built-in ones are in `src/hiro_budget/plugins/`). A source that lists holdings instead of bookings returns a statement with
   `valuation=True` and `holdings` (see `plugins/ing_depot_pdf/importer.py`).
 
 ## Project layout
 
 ```
-config/                         YAML configuration (examples committed)
+config/                         your YAML configuration (created from the templates)
 src/hiro_budget/
-  importers/                    statement parsers (ING Kontoauszug, Depotauszug)
-  services/                     import, categorization pipeline, reports, edits
+  importers/                    importing: data types, plugin loader, CSV engine, connectors
+  plugins/                      built-in importers (ING, Revolut, PayPal) and FinTS, one folder each
+  services/                     import, categorization pipeline, budget, reports, edits
   db/                           SQLAlchemy models + Alembic migrations
   gui/                          PySide6 views
   i18n/                         Qt translations
+  templates/                    example configuration
+demo/                           demo generator and its configuration
+docs/                           user guide (en, de), CSV and plugin guides, screenshots
+packaging/                      Windows build (Nuitka) and release zip
 tests/
 ```

@@ -62,6 +62,13 @@ def nuitka_args(output_dir: Path = ROOT / "dist", lto: bool = False) -> list[str
         f"--include-data-files={PACKAGE / 'i18n'}/*.qm=hiro_budget/i18n/",
         # config templates: the first start creates config/ from them
         f"--include-data-files={PACKAGE / 'templates'}/*.yaml=hiro_budget/templates/",
+        # the user guide (Help > User guide), see gui/guide.py
+        *(
+            f"--include-data-files={ROOT / 'docs'}/{pattern}=hiro_budget/guide/"
+            for pattern in ("workflows.*.md", "csv-import.*.md", "csv-formats.llm.md")
+        ),
+        f"--include-data-dir={ROOT / 'docs' / 'images' / 'workflows'}"
+        "=hiro_budget/guide/images/workflows",
         # Alembic loads the migrations as files, so they go in as files, too
         f"--include-data-files={MIGRATIONS}/*.py={IN_EXE}/",
         f"--include-data-files={MIGRATIONS}/*.mako={IN_EXE}/",
@@ -90,6 +97,9 @@ def nuitka_args(output_dir: Path = ROOT / "dist", lto: bool = False) -> list[str
         "--nofollow-import-to=pygments,PIL,pdfplumber.display,pypdfium2,pypdfium2_raw",
         # PySide6 tries QtNetwork only to set up OpenSSL (no network here; it copes)
         "--nofollow-import-to=PySide6.QtNetwork",
+        # pydantic's mypy plugin (type checking only): with mypy in the venv since #80 it
+        # pulled in all of mypy (measured 2026-11-03: 23 MB, a 19 MB mypyc .pyd)
+        "--nofollow-import-to=pydantic.mypy,mypy,mypyc,ast_serialize",
         # Qt: no network (TLS backends), only the Windows platform, SVG and ICO images
         "--noinclude-qt-plugins=tls",
         *(

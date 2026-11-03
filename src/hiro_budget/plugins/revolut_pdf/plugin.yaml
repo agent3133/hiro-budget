@@ -1,6 +1,6 @@
 name: revolut_pdf
 version: 1.0.0
-api: 1
+api: 2
 description: Revolut EUR account statement as PDF (German export)
 importers:
   - {module: importer, class: RevolutPdfImporter}

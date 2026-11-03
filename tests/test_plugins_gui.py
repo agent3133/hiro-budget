@@ -12,6 +12,7 @@ from hiro_budget.importers import plugins
 from tests.test_plugins import importer_plugin, write_plugin
 
 BUILTIN = [
+    "fints",
     "ing_common",
     "ing_depot_pdf",
     "ing_giro_pdf",
@@ -85,7 +86,7 @@ def test_declining_the_question_saves_nothing(qtbot, app, monkeypatch):
 
 def test_a_broken_user_plugin_shows_its_error(qtbot, app):
     write_plugin(
-        app.settings.plugins_dir, "broken_csv", "name: broken_csv\nversion: 1\napi: 1\nformat: []\n"
+        app.settings.plugins_dir, "broken_csv", "name: broken_csv\nversion: 1\napi: 2\nformat: []\n"
     )
     dlg = PluginsDialog(app)
     qtbot.addWidget(dlg)
@@ -100,7 +101,7 @@ def test_import_dialog_names_plugins_that_are_left_out(qtbot, app):
     from hiro_budget.gui.import_dialog import ImportDialog
 
     importer_plugin(app.settings.plugins_dir, "my_bank_pdf")
-    write_plugin(app.settings.plugins_dir, "broken_csv", "name: other\nversion: '1'\napi: 1\n")
+    write_plugin(app.settings.plugins_dir, "broken_csv", "name: other\nversion: '1'\napi: 2\n")
     dlg = ImportDialog(app)
     qtbot.addWidget(dlg)
     text = dlg.plugin_problems.text()
@@ -124,7 +125,7 @@ def test_read_again_makes_a_new_plugin_usable_without_restart(qtbot, app):
     write_plugin(
         app.settings.plugins_dir,
         "my_bank_csv",
-        "name: my_bank_csv\nversion: 1\napi: 1\nformats: [format.csv.yaml]\n",
+        "name: my_bank_csv\nversion: 1\napi: 2\nformats: [format.csv.yaml]\n",
         {
             "format.csv.yaml": "name: My Bank\ndetect: {header_has: [Tag, Betrag]}\n"
             "account: {name: My Bank}\ncolumns: {booking_date: Tag, amount: Betrag}\n"

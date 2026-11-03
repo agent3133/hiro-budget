@@ -139,7 +139,7 @@ def test_middle_links_split_in_proportion() -> None:
 
 
 def test_page_draws_and_opens_breakdowns(qtbot, flow_app) -> None:
-    from hiro_budget.gui.report_pages import CashFlowReport
+    from hiro_budget.gui.reports import CashFlowReport
 
     page = CashFlowReport(flow_app)
     qtbot.addWidget(page)
@@ -171,7 +171,7 @@ def test_page_draws_and_opens_breakdowns(qtbot, flow_app) -> None:
 
 
 def test_page_empty_period(qtbot, flow_app) -> None:
-    from hiro_budget.gui.report_pages import CashFlowReport
+    from hiro_budget.gui.reports import CashFlowReport
 
     page = CashFlowReport(flow_app)
     qtbot.addWidget(page)
@@ -183,7 +183,7 @@ def test_page_empty_period(qtbot, flow_app) -> None:
 def test_expense_groups_in_the_budget_colours(qtbot, flow_app, monkeypatch) -> None:
     from hiro_budget.gui import theme
     from hiro_budget.gui.budget_view import CHIP_ROLE, GROUP_ROLE, BudgetView
-    from hiro_budget.gui.report_pages import CashFlowReport
+    from hiro_budget.gui.reports import CashFlowReport
 
     monkeypatch.setattr(theme, "_active", "rose_pine")  # the theme with group colours
     page = CashFlowReport(flow_app)

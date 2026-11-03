@@ -1,6 +1,11 @@
 # Main configuration. Copied to config.yaml on first run - edit that file, not this one.
 # Relative paths are resolved against the project root (parent of the config directory).
 
+# Folder for database, classifier, backups and view state, e.g. in OneDrive or on a NAS.
+# Set it in the app (Settings > Data folder…), which moves the files there. Unset: the
+# folder of database.path.
+# data_folder: D:/OneDrive/Hiro Budget
+
 database:
   path: data/finance.db
 
@@ -27,6 +32,8 @@ import_folder: input
 # bookings. iban holds the depot number ("Direkt-Depot Nr.").
 # transfer_category (optional): budget category for money moved from a budget account
 # into this tracking account (e.g. ETF purchases); otherwise it is uncategorized outflow.
+# stale_hint: false (optional): no note on the Overview when no bookings come in (closed
+# accounts). Default: a note after 5 weeks (cash 6 weeks, depot a quarter).
 own_accounts:
   - name: ING Girokonto
     kind: giro
@@ -74,6 +81,9 @@ mortgage:
     loan_account: ING Baufinanzierung
     interest_category: wohnen.baufinanzierung
     principal_category: wohnen.baufinanzierung
+    # End of the fixed-rate period (Zinsbindung, optional): the forecast in the
+    # Baufinanzierung report shows the debt left then.
+    fixed_until: 2031-12-31
     match:
       purpose: "(?i)ZINSEN.*TILGUNG"
 
@@ -97,17 +107,19 @@ backup:
   before_import: true
   keep: 10
 
-# Online banking (FinTS): set up in Settings > Bank access. Per login the bank's accounts,
-# the app account each goes to and the first day fetched (statements cover the days before;
-# no fetch_from: as far back as the bank allows). The PIN is never stored here.
-# product_id: registered with the Deutsche Kreditwirtschaft; empty: a placeholder is sent.
-# fints:
-#   product_id:
+# Online banking: set up in Settings > Bank access. Per login the connector (a plugin, e.g.
+# fints) and its settings, the bank's accounts, the app account each goes to and the first
+# day fetched (statements cover the days before; no fetch_from: as far back as the bank
+# allows). The PIN is never stored here.
+# connectors: settings shared by all logins of a connector; fints.product_id is registered
+# with the Deutsche Kreditwirtschaft (empty: a placeholder is sent).
+# bank_access:
+#   connectors:
+#     fints: {product_id: }
 #   logins:
-#     - name: ING
-#       bank_code: "50010517"
-#       server: https://fints.ing.de/fints/
-#       login_id: "1234567890"
+#     - connector: fints
+#       name: ING
+#       settings: {bank_code: "50010517", server: "https://fints.ing.de/fints/", login_id: "1234567890"}
 #       accounts:
 #         - {bank_id: DE12345678901234567890, product: Girokonto, kind: giro, account: ING Girokonto, fetch_from: 2026-04-01}
 

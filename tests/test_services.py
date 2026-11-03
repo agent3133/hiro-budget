@@ -138,7 +138,7 @@ def test_categorization_preview_does_not_persist(app, statement_pdf) -> None:
     with app.session() as s:
         labels = import_service.categorization_preview(s, app.settings, p)
     assert labels[1] == "Supermarkt"
-    assert labels[-1] == "Baufinanzierung + ⇄ ING Baufinanzierung"
+    assert labels[-1] == "Baufinanzierung + ↔ ING Baufinanzierung"
     with app.session() as s:
         assert txs.list_transactions(s) == []
         assert import_service.preview(s, statement_pdf).can_commit

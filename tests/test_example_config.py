@@ -38,3 +38,25 @@ def test_a_broken_configuration_is_shown_in_a_message_box(tmp_path, monkeypatch)
     shown.clear()
     assert main(["--config-dir", str(cfg), "train"]) == 2  # a command: the console only
     assert shown == []
+
+
+def test_misspelt_keys_are_errors_naming_the_key(tmp_path):
+    """#77: a typo must not silently drop a setting (here a rule's amount condition)."""
+    import pytest
+
+    from hiro_budget.config import ConfigError
+
+    cfg = tmp_path / "config"
+    load_settings(cfg)
+    rules = (cfg / "rules.yaml").read_text(encoding="utf-8")
+    (cfg / "rules.yaml").write_text(
+        "rules:\n  - id: r1\n    match: {counterparty: '^REWE', amout_min: 100}\n    category: x\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigError, match=r"(?s)rules\.yaml.*match\.amout_min\s+Extra inputs"):
+        load_settings(cfg)
+    (cfg / "rules.yaml").write_text(rules, encoding="utf-8")
+    config = (cfg / "config.yaml").read_text(encoding="utf-8")
+    (cfg / "config.yaml").write_text(config + "\nplugins: {enable: [my_bank]}\n", "utf-8")
+    with pytest.raises(ConfigError, match=r"(?s)config\.yaml.*plugins\.enable\b"):
+        load_settings(cfg)

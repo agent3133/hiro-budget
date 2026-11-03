@@ -70,6 +70,11 @@ ROSE_PINE = {
     "bevel_dark": "#B9AE9F",
     "income": "#3F7478",
     "expense": "#E3A35A",
+    "principal": "#7E9E6E",  # loan repayment (sage, beside expense = interest)
+    "line_series": "#8A3329",  # a line over bars (money invested)
+    "second_year": "#B5ACA3",  # the earlier year next to the accent
+    # series without a meaning of their own (securities in the depot report)
+    "series": ["#3F7478", "#E3A35A", "#5B4F8C", "#C4706A", "#7E9E6E", "#9FB3B6", "#A39BB3"],
     # one per page of the sidebar, and repeated for the budget groups
     "pages": ["#E4B9B4", "#CEC1D4", "#EFCB9E", "#ADC4C3", "#9FB3B6"],
 }
@@ -106,6 +111,10 @@ ROSE_PINE_DARK = {
     "bevel_dark": "#141118",
     "income": "#6FB5BA",
     "expense": "#E9A96A",
+    "principal": "#9DC08B",
+    "line_series": "#F2A99E",
+    "second_year": "#6E6780",
+    "series": ["#6FB5BA", "#E9A96A", "#9384D6", "#E08F88", "#9DC08B", "#9FB3B6", "#8A82A0"],
     "pages": ["#5B3F46", "#4B4159", "#5D4B34", "#3F5453", "#3B4B4E"],
 }
 
@@ -314,6 +323,46 @@ def active() -> str:
 def tokens() -> dict | None:
     """Colours of the custom theme in use, None for the native look."""
     return {"rose_pine": ROSE_PINE, "rose_pine_dark": ROSE_PINE_DARK}.get(_active)
+
+
+# Colours of the native look ("system", "light", "dark"), for what views draw themselves
+NATIVE_LIGHT = {
+    "neg_text": "#B3261E",
+    "pos_text": "#1E7B34",
+    "warn_text": "#A15C00",
+    "income": "#2E9E5B",
+    "expense": "#D9534F",
+    "principal": "#2E9E5B",
+    "line_series": "#C0392B",
+    "second_year": "#9E9E9E",
+    "series": ["#3B7DD8", "#2E9E5B", "#E8A33D", "#8E5BD8", "#D85B8E", "#5BC0D8", "#9E9E9E"],
+}
+NATIVE_DARK = {
+    "neg_text": "#FF8A80",
+    "pos_text": "#81C995",
+    "warn_text": "#FFB74D",
+    "income": "#4CC27E",
+    "expense": "#EF7672",
+    "principal": "#4CC27E",
+    "line_series": "#FF8A80",
+    "second_year": "#8A8A8A",
+    "series": ["#6FA3EC", "#4CC27E", "#F0B85E", "#AE86E6", "#E683AA", "#7FD3E6", "#9E9E9E"],
+}
+
+
+def color(name: str) -> str:
+    """A colour token of the theme in use; the native look has its own light/dark set."""
+    t = tokens()
+    if t is None:
+        window = QApplication.palette().color(QPalette.ColorRole.Window)
+        t = NATIVE_DARK if window.lightness() < 128 else NATIVE_LIGHT
+    return t[name]
+
+
+def series_color(index: int) -> str:
+    """The ``index``-th colour for chart series without a meaning of their own."""
+    series = color("series")
+    return series[index % len(series)]
 
 
 def _palette(t: dict) -> QPalette:

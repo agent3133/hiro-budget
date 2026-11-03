@@ -17,10 +17,8 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QVBoxLayout,
 )
-from sqlalchemy import select
 
 from hiro_budget.app import App
-from hiro_budget.db.models import Account, Transaction
 from hiro_budget.gui.common import (
     Choice,
     category_choices,
@@ -29,6 +27,7 @@ from hiro_budget.gui.common import (
     select_choice,
     to_qdate,
 )
+from hiro_budget.services import lookups
 from hiro_budget.services.transactions import ManualEntry
 
 EXPENSE, INCOME = "expense", "income"
@@ -52,8 +51,8 @@ class BookingDialog(QDialog):
         self.setMinimumWidth(460)
 
         with app.session() as s:
-            accounts = list(s.scalars(select(Account).order_by(Account.name)))
-            payees = sorted(p for p in s.scalars(select(Transaction.counterparty).distinct()) if p)
+            accounts = lookups.accounts(s)
+            payees = lookups.payee_names(s)
             choices = category_choices(s)
 
         self.account = QComboBox()

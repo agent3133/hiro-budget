@@ -122,6 +122,30 @@ def test_bookings_columns_fit_when_the_list_narrows(qtbot, app) -> None:
     )
 
 
+def test_booking_card_default_width_and_remembered(qtbot, app) -> None:
+    # #41: the empty card took a third of a laptop window and grew with the window
+    from hiro_budget.gui.transactions_view import CARD_MAX, CARD_MIN, TransactionsView
+
+    view = TransactionsView(app)
+    qtbot.addWidget(view)
+    view.resize(1200, 600)
+    view.show()
+    qtbot.waitExposed(view)
+    card = view.splitter.sizes()[1]
+    assert CARD_MIN <= card <= CARD_MAX
+    view.resize(1800, 600)  # a wider window widens the list, not the card
+    qtbot.waitUntil(lambda: sum(view.splitter.sizes()) > 1600)
+    assert view.splitter.sizes()[1] == card
+    view.splitter.setSizes([1300, 420])  # dragged by the user: kept
+    view.save_state()
+    again = TransactionsView(app)
+    qtbot.addWidget(again)
+    again.resize(1800, 600)
+    again.show()
+    qtbot.waitExposed(again)
+    assert abs(again.splitter.sizes()[1] - view.splitter.sizes()[1]) <= 2
+
+
 def test_two_lines_per_booking(qtbot, app, statement_pdf) -> None:
     from hiro_budget.gui.models.transaction_table_model import Col
     from hiro_budget.gui.transactions_view import TransactionsView

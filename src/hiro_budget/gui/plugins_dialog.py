@@ -1,5 +1,5 @@
-"""Settings → Plugins: the importers and CSV formats the app knows, and which of the
-user's own plugins with program code may run (issue #24)."""
+"""Settings → Plugins: the importers, CSV formats and bank connections the app knows, and
+which of the user's own plugins with program code may run (issues #24, #82)."""
 
 from __future__ import annotations
 
@@ -36,9 +36,9 @@ class PluginsDialog(QDialog):
 
         note = QLabel(
             self.tr(
-                "Importers and CSV formats come from plugins. The built-in ones come with the "
-                "app; your own are folders in %1. Your plugins with program code run only "
-                "when you enable them here."
+                "Importers, CSV formats and bank connections come from plugins. The built-in "
+                "ones come with the app; your own are folders in %1. Your plugins with program "
+                "code run only when you enable them here."
             ).replace("%1", str(app.settings.plugins_dir))
         )
         note.setWordWrap(True)
@@ -103,6 +103,8 @@ class PluginsDialog(QDialog):
             parts.append(self.tr("%n importer(s)", "", len(m.importers)))
         if m.formats:
             parts.append(self.tr("%n CSV format(s)", "", len(m.formats)))
+        if m.connectors:
+            parts.append(self.tr("%n bank connection(s)", "", len(m.connectors)))
         if not parts:
             parts.append(self.tr("library"))
         return ", ".join(parts)
@@ -125,7 +127,7 @@ class PluginsDialog(QDialog):
             name = QTableWidgetItem(p.name)
             name.setData(NAME_ROLE, p.name)
             name.setToolTip(p.manifest.description if p.manifest else "")
-            if p.origin == "user" and p.manifest is not None and p.manifest.has_code:
+            if p.origin == "user" and p.manifest is not None and p.has_code:
                 name.setFlags(name.flags() | Qt.ItemFlag.ItemIsUserCheckable)
                 name.setCheckState(
                     Qt.CheckState.Checked if p.name in self.enabled else Qt.CheckState.Unchecked

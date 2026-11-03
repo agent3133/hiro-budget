@@ -16,6 +16,7 @@ from hiro_budget.gui.budget_view import (
     COL_CARRY,
     COL_NAME,
     COL_TARGET,
+    PROGRESS_ROLE,
 )
 from hiro_budget.gui.common import money
 from hiro_budget.gui.main_window import MainWindow
@@ -336,3 +337,54 @@ def test_group_rows_show_the_worst_category(window) -> None:
             view.set_assigned(c.category_id, -c.activity + 10_00)
     item = group_item("lebensmittel")
     assert item.background(COL_AVAILABLE).color() == colors["pos"]
+
+
+def test_move_money_without_selection_targets_a_line_that_needs_money(window, monkeypatch):
+    # #42: From and To both started as Ready to Assign
+    view = window.budget
+    shown = []
+    monkeypatch.setattr(MoveMoneyDialog, "exec", lambda dlg: shown.append(dlg) or 0)
+    view.move_money()
+    dlg = shown[0]
+    assert dlg.source.currentData() == "rta"
+    first_overspent = next(e for e in view.data.envelopes if e.overspent and not e.hidden)
+    assert dlg.target.currentData() == first_overspent.envelope
+    assert round(dlg.amount.value() * 100) == -first_overspent.available
+    dlg._accept()
+    assert dlg.to_id == first_overspent.envelope and dlg.from_id is None
+
+
+def test_move_money_needs_an_amount(window) -> None:
+    view = window.budget
+    groceries = cat(window.app, "lebensmittel.supermarkt")
+    dlg = MoveMoneyDialog(view.data, view, to_id=groceries)
+    assert dlg.amount.value() == 0
+    dlg._accept()
+    assert dlg.result() == 0 and dlg.error.text()
+
+
+def test_target_progress_bar(window, monkeypatch) -> None:
+    # #44: a progress bar under each target: share funded, amber while behind this month
+    def fake_exec(d):
+        d.result_target = TargetDef(type="monthly", amount=600)
+        return 1
+
+    monkeypatch.setattr(TargetDialog, "exec", fake_exec)
+    view = window.budget
+    groceries = cat(window.app, "lebensmittel.supermarkt")
+    view.edit_target(groceries)
+    assert find_item(view, groceries).data(COL_TARGET, PROGRESS_ROLE) == (0.0, True)
+    assert find_item(view, groceries).toolTip(COL_TARGET).startswith("600")
+    view.set_assigned(view.category(groceries).envelope, 150_00)
+    assert find_item(view, groceries).data(COL_TARGET, PROGRESS_ROLE) == (0.25, True)
+    view.set_assigned(view.category(groceries).envelope, 600_00)
+    assert find_item(view, groceries).data(COL_TARGET, PROGRESS_ROLE) == (1.0, False)
+    without = [  # shown categories without a target: no bar
+        item
+        for i in range(view.tree.topLevelItemCount())
+        for j in range(view.tree.topLevelItem(i).childCount())
+        if (item := view.tree.topLevelItem(i).child(j)).data(COL_NAME, CAT_ROLE) != groceries
+    ]
+    assert without
+    assert all(item.data(COL_TARGET, PROGRESS_ROLE) is None for item in without)
+    view.tree.grab()  # paints the bars without an error

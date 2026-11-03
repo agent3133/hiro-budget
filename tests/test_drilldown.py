@@ -93,7 +93,7 @@ def test_budget_breakdown_matches_budget_vs_actual(app) -> None:
 
 
 def test_savings_page_breakdown(qtbot, app) -> None:
-    from hiro_budget.gui.report_pages import SavingsRateReport
+    from hiro_budget.gui.reports import SavingsRateReport
 
     page = SavingsRateReport(app)
     qtbot.addWidget(page)
@@ -115,7 +115,7 @@ def test_savings_page_breakdown(qtbot, app) -> None:
 
 
 def test_dialog_opens_a_booking(qtbot, app) -> None:
-    from hiro_budget.gui.report_pages import SavingsRateReport
+    from hiro_budget.gui.reports import SavingsRateReport
 
     page = SavingsRateReport(app)
     qtbot.addWidget(page)
@@ -134,8 +134,37 @@ def test_dialog_opens_a_booking(qtbot, app) -> None:
     assert not dialog.isVisible()
 
 
+def test_return_opens_the_booking(qtbot, app) -> None:
+    """Return on a booking opens it, on a category folds it; never closes the dialog (#64)."""
+    from PySide6.QtCore import Qt
+
+    from hiro_budget.gui.reports import SavingsRateReport
+
+    page = SavingsRateReport(app)
+    qtbot.addWidget(page)
+    page.refresh(date(2026, 4, 1), date(2026, 4, 30), None)
+    page._drill(0, 2)
+    dialog = page.breakdown_dialog
+    dialog.show()
+    qtbot.waitExposed(dialog)
+    dialog.activateWindow()
+    dialog.tree.setFocus()
+    qtbot.waitUntil(dialog.tree.hasFocus)
+    category = dialog.tree.topLevelItem(0)
+    dialog.tree.setCurrentItem(category)
+    expanded = category.isExpanded()
+    qtbot.keyClick(dialog.tree, Qt.Key.Key_Return)
+    assert dialog.isVisible()  # a category: folded, the dialog stays
+    assert category.isExpanded() != expanded
+    dialog.tree.setCurrentItem(category.child(0))
+    with qtbot.waitSignal(page.show_booking) as signal:
+        qtbot.keyClick(dialog.tree, Qt.Key.Key_Return)
+    assert signal.args == [dialog.breakdown.sections[0].parts[0].bookings[0].tx_id]
+    assert not dialog.isVisible()
+
+
 def test_budget_and_year_pages(qtbot, app) -> None:
-    from hiro_budget.gui.report_pages import BudgetActualReport, YearComparisonReport
+    from hiro_budget.gui.reports import BudgetActualReport, YearComparisonReport
 
     actual = BudgetActualReport(app)
     qtbot.addWidget(actual)
@@ -166,16 +195,24 @@ def test_overview_tab_and_main_window(qtbot, app) -> None:
     qtbot.addWidget(window)
     view = window.reports
     view.refresh()
-    # the donut: a slice opens its category's expenses
+    # the donut: groups (#52); a click on one shows its categories, a double-click on a
+    # category opens its expenses
     first = view._cats[0]
     (donut,) = view.category_view.chart().series()
-    index = next(i for i, (_, cats) in enumerate(view._slices) if cats == [first])
-    donut.slices()[index].doubleClicked.emit()
-    assert view.breakdown_dialog.breakdown.total == first.expense_cents
     assert sum(s.value() for s in donut.slices()) * 100 == pytest.approx(
         sum(c.expense_cents for c in view._cats if c.expense_cents > 0)
     )
     assert len(view._legend) == len(view._slices) and view._center[1].text() == "expenses"
+    group = next(i for i, (_, cats) in enumerate(view._slices) if first in cats)
+    donut.slices()[group].clicked.emit()
+    assert view._donut_group == first.group_id and view.donut_back.isVisibleTo(view)
+    (donut,) = view.category_view.chart().series()
+    index = next(i for i, (_, cats) in enumerate(view._slices) if cats == [first])
+    donut.slices()[index].doubleClicked.emit()
+    assert view.breakdown_dialog.breakdown.total == first.expense_cents
+    assert view._center[1].text() == first.group_name
+    view.donut_back.linkActivated.emit("#")
+    assert view._donut_group is None and not view.donut_back.isVisibleTo(view)
     # fixed + variable costs add up to each month's expenses; a bar opens the expenses
     (costs,) = view.costs_view.chart().series()
     fixed, variable = costs.barSets()

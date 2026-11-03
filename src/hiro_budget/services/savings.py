@@ -16,7 +16,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from hiro_budget.services import networth
-from hiro_budget.services.reports import monthly_totals
+from hiro_budget.services.reports import monthly_totals, partial_month
 
 MIN_ROLLING_MONTHS = 3
 
@@ -58,6 +58,9 @@ class SavingsMonth:
 class SavingsRates:
     months: list[SavingsMonth]
     complete_from: str | None  # first month with data on all accounts
+    # the last month if it holds data for only part of it: (month, last day with data);
+    # it has no 12-month rate (its missing weeks would pull it down)
+    partial: tuple[str, date] | None = None
 
     @property
     def income_cents(self) -> int:
@@ -95,6 +98,7 @@ def savings_rates(
     worth = networth.net_worth(session, f"{date_to:%Y-%m}", account_id)
     complete_from = worth.complete_from if worth.months else None
     first = f"{date_from:%Y-%m}"
+    partial = partial_month(session, date_to)
     months: list[SavingsMonth] = []
     for i, t in enumerate(totals):
         if t.month < first:
@@ -104,6 +108,8 @@ def savings_rates(
             for w in totals[max(0, i - 11) : i + 1]
             if complete_from is not None and w.month >= complete_from
         ]
+        if partial is not None and t.month >= partial[0]:
+            window = []  # an incomplete month: no 12-month rate
         months.append(
             SavingsMonth(
                 t.month,
@@ -116,4 +122,4 @@ def savings_rates(
                 t.one_off_expense_cents,
             )
         )
-    return SavingsRates(months, complete_from)
+    return SavingsRates(months, complete_from, partial)

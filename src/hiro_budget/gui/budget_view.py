@@ -5,8 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date
 
-from PySide6.QtCore import QByteArray, QLocale, Qt, QTimer, Signal
-from PySide6.QtGui import QBrush, QColor, QFont, QKeySequence, QPainter, QShortcut
+from PySide6.QtCore import QByteArray, QLocale, QRectF, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFont, QPainter
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QStyle,
     QStyledItemDelegate,
+    QStyleOptionViewItem,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -28,7 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from hiro_budget.app import App
-from hiro_budget.gui import theme
+from hiro_budget.gui import shortcuts, theme
 from hiro_budget.gui.common import (
     accent_color,
     amount_color,
@@ -36,7 +37,6 @@ from hiro_budget.gui.common import (
     is_dark,
     money,
     show_error,
-    with_keys,
 )
 from hiro_budget.gui.move_money_dialog import MoveMoneyDialog
 from hiro_budget.gui.navigation import (
@@ -68,6 +68,9 @@ ENV_ROLE = Qt.ItemDataRole.UserRole + 2  # Envelope of rows that hold money
 GROUP_ROLE = Qt.ItemDataRole.UserRole + 3  # group key (group rows)
 STATE_ROLE = Qt.ItemDataRole.UserRole + 4  # colour key of the Available column
 CHIP_ROLE = Qt.ItemDataRole.UserRole + 5  # chip colour behind a group name (Rosé Pine)
+# (share 0..1, behind this month) of a target: a progress bar under the target text
+PROGRESS_ROLE = Qt.ItemDataRole.UserRole + 6
+PROGRESS_WIDTH = 140  # px at most: a bar, not a line across the wide column
 
 ALL, OVERSPENT, UNDERFUNDED = "all", "overspent", "underfunded"
 
@@ -119,7 +122,11 @@ class AssignedDelegate(QStyledItemDelegate):
         self.view = view
 
     def paint(self, painter, option, index):
-        """Rosé Pine: the Available amount as a rounded pill, group names on a chip."""
+        """Rosé Pine: the Available amount as a rounded pill, group names on a chip;
+        a thin progress bar under each target."""
+        if index.column() == COL_TARGET and index.data(PROGRESS_ROLE) is not None:
+            self._paint_progress(painter, option, index)
+            return
         t = theme.tokens()
         state = index.data(STATE_ROLE)
         chip = index.data(CHIP_ROLE)
@@ -161,10 +168,41 @@ class AssignedDelegate(QStyledItemDelegate):
         painter.drawText(r, align, text)
         painter.restore()
 
+    def _paint_progress(self, painter, option, index) -> None:
+        """The target text a little higher, a progress bar under it: the share funded
+        (green), or behind this month (amber)."""
+        share, behind = index.data(PROGRESS_ROLE)
+        text_option = QStyleOptionViewItem(option)
+        text_option.rect = option.rect.adjusted(0, -3, 0, -3)
+        painter.save()
+        painter.fillRect(
+            option.rect, index.data(Qt.ItemDataRole.BackgroundRole) or QColor(0, 0, 0, 0)
+        )
+        painter.restore()
+        super().paint(painter, text_option, index)
+        r = option.rect
+        track = QRectF(r.left() + 6, r.bottom() - 5, min(PROGRESS_WIDTH, r.width() - 12), 4)
+        if track.width() <= 0:
+            return
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        painter.setPen(Qt.PenStyle.NoPen)
+        t = theme.tokens()
+        painter.setBrush(QColor(t["line"]) if t is not None else QColor(128, 128, 128, 60))
+        painter.drawRoundedRect(track, 2, 2)
+        if share > 0:
+            done = QRectF(track)
+            done.setWidth(max(4.0, track.width() * min(1.0, share)))
+            painter.setBrush(QColor(theme.color("warn_text" if behind else "pos_text")))
+            painter.drawRoundedRect(done, 2, 2)
+        painter.restore()
+
     def sizeHint(self, option, index):
         size = super().sizeHint(option, index)
         if theme.tokens() is not None:  # room around the pills
             size.setHeight(size.height() + 8)
+        else:  # room for the target progress bars (all rows: uniform row heights)
+            size.setHeight(size.height() + 6)
         return size
 
     def createEditor(self, parent, option, index):
@@ -214,6 +252,8 @@ class BudgetView(QWidget):
     show_transactions = Signal(int, str)
     #: month - show uncategorized bookings of that month
     show_uncategorized = Signal(str)
+    #: money was assigned, moved or an assignment undone (the overview shows it)
+    assignments_changed = Signal()
 
     def __init__(self, app: App, parent=None) -> None:
         super().__init__(parent)
@@ -224,6 +264,27 @@ class BudgetView(QWidget):
         self.undo_steps: list[Step] = []
         self.redo_steps: list[Step] = []
 
+        header = self._build_header()
+        toolbar, actions = self._build_actions()
+        table = self._build_tree()
+
+        layout = QVBoxLayout(self)
+        layout.addLayout(header)
+        layout.addSpacing(4)
+        layout.addWidget(self.warning)
+        layout.addLayout(toolbar)
+        layout.addLayout(table, 1)
+        layout.addLayout(actions)
+        # Return / F2 on a row: type the amount to assign
+        shortcuts.bind(  # not while the amount is being typed
+            "budget_assign", self.tree, self._edit_assigned, Qt.ShortcutContext.WidgetShortcut
+        )
+        self.setFocusProxy(self.tree)
+        self._update_undo_buttons()
+        self.refresh()
+
+    def _build_header(self) -> QHBoxLayout:
+        """Month title with its arrows, the Ready to Assign terms and card, the warning."""
         # -- header --
         self.prev_button = QPushButton()
         self.next_button = QPushButton()
@@ -257,19 +318,10 @@ class BudgetView(QWidget):
 
         self.undo_button = icon_button(ICON_UNDO, "↶", self.tr("Undo"), self.undo)
         self.redo_button = icon_button(ICON_REDO, "↷", self.tr("Redo"), self.redo)
-        context = Qt.ShortcutContext.WidgetWithChildrenShortcut  # only on this tab
-        for keys, slot in (
-            (QKeySequence.StandardKey.Undo, self.undo),
-            (QKeySequence.StandardKey.Redo, self.redo),
-            # Alt+Left / Alt+Right: the main window's back / forward keys change the
-            # month on this page (one shortcut each, so they are not ambiguous)
-            ("Alt+Home", lambda: self.go(month_of(date.today()))),
-            ("Ctrl+M", self._move_money_key),
-        ):
-            QShortcut(QKeySequence(keys), self, slot, context=context)
-        self.prev_button.setToolTip(with_keys(self.tr("Previous month"), "Alt+Left"))
-        self.next_button.setToolTip(with_keys(self.tr("Next month"), "Alt+Right"))
-        today.setToolTip(with_keys(self.tr("Current month"), "Alt+Home"))
+        self._bind_keys()
+        self.prev_button.setToolTip(shortcuts.tip(self.tr("Previous month"), "budget_month", 0))
+        self.next_button.setToolTip(shortcuts.tip(self.tr("Next month"), "budget_month", 1))
+        today.setToolTip(shortcuts.tip(self.tr("Current month"), "budget_today"))
 
         # the month at the top, browsed with the arrows right next to it
         title_row = QHBoxLayout()
@@ -307,7 +359,35 @@ class BudgetView(QWidget):
         self.warning = banner(QLabel(), "warning")
         self.warning.setTextFormat(Qt.TextFormat.RichText)
         self.warning.linkActivated.connect(lambda _l: self.show_uncategorized.emit(self.month))
+        return header
 
+    def _bind_keys(self) -> None:
+        """The page's shortcuts (only while it is shown)."""
+        context = Qt.ShortcutContext.WidgetWithChildrenShortcut  # only on this tab
+        shortcuts.bind("undo_redo", self, self.undo, context, index=0)
+        shortcuts.bind("undo_redo", self, self.redo, context, index=1)
+        for index, step in ((0, -1), (1, 1)):  # Alt+Left / Right stay back / forward (#66)
+            shortcuts.bind(
+                "budget_month",
+                self,
+                lambda s=step: self.go(month_add(self.month, s)),
+                context,
+                index=index,
+            )
+        shortcuts.bind("budget_today", self, lambda: self.go(month_of(date.today())), context)
+        shortcuts.bind("propose_budget", self, self.propose_budget, context)
+        for index, expand in ((0, True), (1, False)):
+            shortcuts.bind(
+                "expand_groups",
+                self,
+                lambda e=expand: self._set_all_expanded(e),
+                context,
+                index=index,
+            )
+        shortcuts.bind("move_money", self, self._move_money_key, context)
+
+    def _build_actions(self) -> tuple[QHBoxLayout, QHBoxLayout]:
+        """The action bar below the table and the view options above it."""
         # -- actions (below the table): the frequent ones as buttons, the rest in a menu --
         more = QMenu(self)
         more.setToolTipsVisible(True)
@@ -331,7 +411,11 @@ class BudgetView(QWidget):
         copy_last.triggered.connect(self.copy_last_month)
         more.addSeparator()
         propose = QPushButton(self.tr("Propose budget…"))
-        propose.setToolTip(self.tr("Propose amounts from the spending of previous months."))
+        propose.setToolTip(
+            shortcuts.tip(
+                self.tr("Propose amounts from the spending of previous months."), "propose_budget"
+            )
+        )
         propose.clicked.connect(self.propose_budget)
         move = QPushButton(self.tr("Move money…"))
         move.clicked.connect(lambda: self.move_money())
@@ -346,7 +430,7 @@ class BudgetView(QWidget):
         self.filter.addItem(self.tr("All categories"), ALL)
         self.filter.addItem(self.tr("Overspent"), OVERSPENT)
         self.filter.addItem(self.tr("Underfunded"), UNDERFUNDED)
-        ui = app.ui_state
+        ui = self.app.ui_state
         self.filter.setCurrentIndex(max(0, self.filter.findData(ui.get("budget.filter", ALL))))
         self.filter.currentIndexChanged.connect(self._filter_changed)
         self.hide_empty = QCheckBox(self.tr("Hide empty"))
@@ -371,7 +455,10 @@ class BudgetView(QWidget):
         toolbar.addWidget(self.hide_empty)
         self.filter.setToolTip(self.tr("Show"))  # the entries say what is shown
         toolbar.addWidget(self.filter)
+        return toolbar, actions
 
+    def _build_tree(self) -> QVBoxLayout:
+        """The category tree and the totals row below it."""
         # -- tree --
         self.tree = QTreeWidget()
         self.tree.setColumnCount(COLUMNS)
@@ -411,7 +498,7 @@ class BudgetView(QWidget):
         self.tree.setColumnWidth(COL_NAME, 280)
         for col in MONEY_COLUMNS:
             self.tree.setColumnWidth(col, 130)
-        saved = app.ui_state.get("budget.header", "")
+        saved = self.app.ui_state.get("budget.header", "")
         if saved:
             h.restoreState(QByteArray.fromBase64(saved.encode()))
             h.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
@@ -454,22 +541,7 @@ class BudgetView(QWidget):
         table.setSpacing(0)
         table.addWidget(self.tree, 1)
         table.addWidget(self.totals)
-
-        layout = QVBoxLayout(self)
-        layout.addLayout(header)
-        layout.addSpacing(4)
-        layout.addWidget(self.warning)
-        layout.addLayout(toolbar)
-        layout.addLayout(table, 1)
-        layout.addLayout(actions)
-        # Return / F2 on a row: type the amount to assign
-        for keys in (Qt.Key.Key_Return, Qt.Key.Key_Enter, Qt.Key.Key_F2):
-            QShortcut(QKeySequence(keys), self.tree, self._edit_assigned).setContext(
-                Qt.ShortcutContext.WidgetShortcut  # not while the amount is being typed
-            )
-        self.setFocusProxy(self.tree)
-        self._update_undo_buttons()
-        self.refresh()
+        return table
 
     # -- data ------------------------------------------------------------------
 
@@ -480,6 +552,10 @@ class BudgetView(QWidget):
     def restore_nav_state(self, month: str) -> None:
         if month != self.month:
             self.go(month)
+
+    def focus_regions(self) -> list[QWidget]:
+        """F6: the view options above the table, the table, the buttons below it."""
+        return [self.expand_button, self.tree, self.undo_button]
 
     def go(self, month: str) -> None:
         self.month = month
@@ -591,7 +667,9 @@ class BudgetView(QWidget):
         return [self.tree.topLevelItem(i) for i in range(self.tree.topLevelItemCount())]
 
     def _toggle_expanded(self) -> None:
-        expand = not any(g.isExpanded() for g in self._groups())
+        self._set_all_expanded(not any(g.isExpanded() for g in self._groups()))
+
+    def _set_all_expanded(self, expand: bool) -> None:
         for g in self._groups():
             g.setExpanded(expand)  # remembered via itemExpanded / itemCollapsed
         self._update_expand_button()
@@ -599,8 +677,10 @@ class BudgetView(QWidget):
     def _update_expand_button(self) -> None:
         if any(g.isExpanded() for g in self._groups()):
             self.expand_button.setText(self.tr("Collapse all"))
+            self.expand_button.setToolTip(shortcuts.native(shortcuts.sequences("expand_groups")[1]))
         else:
             self.expand_button.setText(self.tr("Expand all"))
+            self.expand_button.setToolTip(shortcuts.native(shortcuts.sequences("expand_groups")[0]))
 
     def save_state(self) -> None:
         header = self.tree.header().saveState()
@@ -816,6 +896,9 @@ class BudgetView(QWidget):
         item.setText(COL_ASSIGNED, money(c.assigned))
         item.setText(COL_AVAILABLE, money(c.available))
         item.setText(COL_TARGET, self._target_text(c))
+        item.setToolTip(COL_TARGET, self._target_text(c))  # the column may cut it off
+        if c.target is not None and c.progress is not None:
+            item.setData(COL_TARGET, PROGRESS_ROLE, (c.progress, c.needed > 0))
         item.setData(COL_NAME, ENV_ROLE, c.envelope)
         item.setData(COL_ASSIGNED, ENV_ROLE, c.envelope)
         item.setFlags(item.flags() | Qt.ItemFlag.ItemIsEditable)
@@ -887,31 +970,20 @@ class BudgetView(QWidget):
         if step.before != step.after:
             self.undo_steps.append(step)
             self.redo_steps.clear()
+            self.assignments_changed.emit()
         self._update_undo_buttons()
 
     def _update_undo_buttons(self) -> None:
-        for button, steps, name, text, keys in (
-            (
-                self.undo_button,
-                self.undo_steps,
-                self.tr("Undo"),
-                self.tr("Undo: %1 (%2)"),
-                QKeySequence.Undo,
-            ),
-            (
-                self.redo_button,
-                self.redo_steps,
-                self.tr("Redo"),
-                self.tr("Redo: %1 (%2)"),
-                QKeySequence.Redo,
-            ),
+        for button, steps, name, text, index in (
+            (self.undo_button, self.undo_steps, self.tr("Undo"), self.tr("Undo: %1 (%2)"), 0),
+            (self.redo_button, self.redo_steps, self.tr("Redo"), self.tr("Redo: %1 (%2)"), 1),
         ):
             button.setEnabled(bool(steps))
             if steps:  # what would be undone / redone
                 name = text.replace("%1", steps[-1].label).replace(
                     "%2", self._month_title(steps[-1].month)
                 )
-            button.setToolTip(with_keys(name, keys))
+            button.setToolTip(shortcuts.tip(name, "undo_redo", index))
 
     def _edit_assigned(self) -> None:
         item = self.tree.currentItem()
@@ -930,6 +1002,7 @@ class BudgetView(QWidget):
         except Exception as e:
             show_error(self, self.tr("Undo"), e)
             return False
+        self.assignments_changed.emit()
         self.go(step.month)  # show the month that changed
         return True
 
@@ -1022,17 +1095,31 @@ class BudgetView(QWidget):
         if self.data is None:
             return
         c = self.envelope(target)
-        kwargs = {}
         if c is not None and c.overspent:
             kwargs = {"to_id": c.envelope, "cents": -c.available}  # cover overspending
         elif c is not None:
             kwargs = {"from_id": c.envelope, "cents": max(c.available, 0)}
+        else:  # nothing selected: from Ready to Assign to the line that needs money most
+            kwargs = self._move_money_default()
         dlg = MoveMoneyDialog(self.data, self, **kwargs)
         if dlg.exec():
             self._run(
                 self.tr("Move money"),
                 lambda s: budget.move_money(s, self.month, dlg.from_id, dlg.to_id, dlg.cents),
             )
+
+    def _move_money_default(self) -> dict:
+        """To the first overspent line (its overspending), else the first underfunded one
+        (what its target still needs), else the first line with no amount."""
+        lines = [e for e in self.data.envelopes if not e.hidden]
+        for wanted, cents in (
+            (lambda e: e.overspent, lambda e: -e.available),
+            (lambda e: e.underfunded, lambda e: e.needed),
+        ):
+            line = next((e for e in lines if wanted(e)), None)
+            if line is not None:
+                return {"to_id": line.envelope, "cents": cents(line)}
+        return {"to_id": lines[0].envelope} if lines else {}
 
     def edit_target(self, target: int | Envelope) -> None:
         c = self.envelope(target)

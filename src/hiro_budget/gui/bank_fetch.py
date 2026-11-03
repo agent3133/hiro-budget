@@ -1,8 +1,9 @@
-"""Fetching from the bank: the background thread, PIN and TAN prompts, and the fetch
-button with its status in the title bar.
+"""Fetching from the bank: the background thread, the secret (PIN) and TAN prompts, and
+the fetch button with its status in the title bar.
 
-The thread only talks to the bank; the database is written on the GUI thread afterwards
-(``services.bank.fetch.import_fetched``), like an import.
+Works with any connector plugin (#82). The thread only talks to the bank; the database is
+written on the GUI thread afterwards (``services.connections.import_fetched``), like an
+import.
 """
 
 from __future__ import annotations
@@ -17,12 +18,19 @@ from PySide6.QtCore import QCoreApplication, QObject, Qt, QThread, QTimer, Signa
 from PySide6.QtWidgets import QInputDialog, QLineEdit, QMessageBox, QToolButton, QWidget
 
 from hiro_budget.app import App
-from hiro_budget.config import BankAccountLink, BankLogin
-from hiro_budget.gui.common import busy, learning_text, money
-from hiro_budget.services import bank
+from hiro_budget.config import BankAccountLink, BankLogin, Settings
+from hiro_budget.gui.common import money
+from hiro_budget.gui.training import trainer
+from hiro_budget.importers.connectors import (
+    Cancelled,
+    Confirmation,
+    ConnectorError,
+    LoginError,
+    Offline,
+    text,
+)
+from hiro_budget.services import connections
 from hiro_budget.services.backup import create_backup
-from hiro_budget.services.bank import fetch
-from hiro_budget.services.categorization.pipeline import train_classifier
 
 log = logging.getLogger(__name__)
 
@@ -37,7 +45,7 @@ class BankWorker(QThread):
     succeeded = Signal(object)
     failed = Signal(object)  # the exception
 
-    def __init__(self, job: Callable[[bank.Confirmation], object], parent=None) -> None:
+    def __init__(self, job: Callable[[Confirmation], object], parent=None) -> None:
         super().__init__(parent)
         self.job = job
         self.cancelled = threading.Event()
@@ -76,28 +84,40 @@ class BankWorker(QThread):
         self._tan_ready.set()
 
 
-def ask_pin(parent: QWidget | None, login: BankLogin, rejected: bool = False) -> str | None:
-    """The PIN of a login (not stored); None: cancelled."""
-    text = (
-        QCoreApplication.translate("bank_fetch", "PIN for %1 (login %2):")
-        .replace("%1", login.name)
-        .replace("%2", login.login_id)
+def secret_label(settings: Settings, login: BankLogin) -> str:
+    """What the login's connector asks for at every connection ("PIN"), in the app's
+    language; "" when it asks for nothing (or no plugin provides it: connecting fails)."""
+    try:
+        c = connections.connector(settings, login.connector)
+    except ConnectorError:
+        return ""
+    return text(c, c.secret, settings.app.language) if c.secret else ""
+
+
+def ask_secret(
+    parent: QWidget | None, label: str, login: BankLogin, rejected: bool = False
+) -> str | None:
+    """The secret (PIN) of a login, never stored; None: cancelled."""
+    prompt = (
+        QCoreApplication.translate("bank_fetch", "%1 for %2:")
+        .replace("%1", label)
+        .replace("%2", login.name)
     )
     if rejected:
-        text = (
+        prompt = (
             QCoreApplication.translate(
-                "bank_fetch", "The bank rejected the PIN. Please enter it again."
-            )
+                "bank_fetch", "The bank rejected the login. Please enter the %1 again."
+            ).replace("%1", label)
             + "\n\n"
-            + text
+            + prompt
         )
-    pin, ok = QInputDialog.getText(
+    secret, ok = QInputDialog.getText(
         parent,
         QCoreApplication.translate("bank_fetch", "Online banking"),
-        text,
+        prompt,
         QLineEdit.EchoMode.Password,
     )
-    return pin if ok and pin else None
+    return secret if ok and secret else None
 
 
 def ask_tan(parent: QWidget | None, worker: BankWorker, challenge: str) -> None:
@@ -117,16 +137,16 @@ def ask_tan(parent: QWidget | None, worker: BankWorker, challenge: str) -> None:
 class _LoginJob:
     login: BankLogin
     starts: list[tuple[BankAccountLink, date | None]]
-    pin: str = field(default="", repr=False)
+    secret: str = field(default="", repr=False)
 
 
-def fetch_login(job: _LoginJob, product_id: str | None, confirm: bank.Confirmation):
+def fetch_login(job: _LoginJob, settings: Settings, confirm: Confirmation):
     """Worker thread: bookings and balances of the login's fetched accounts.
 
-    Returns ``(items, missing)``: ``(login, link, Fetched)`` per account, and the links the
-    bank did not list."""
+    Returns ``(items, missing)``: ``(login, link, ParsedStatement)`` per account, and the
+    links the bank did not list."""
     items, missing = [], []
-    with bank.connect(job.login, job.pin, product_id, confirm) as session:
+    with connections.connect(settings, job.login, job.secret, confirm) as session:
         offered = {a.bank_id: a for a in session.accounts()}
         for link, start in job.starts:
             account = offered.get(link.bank_id)
@@ -178,7 +198,7 @@ class FetchControl(QObject):
 
     def retranslate(self) -> None:
         self.button.setText(self.tr("Fetch"))
-        self.button.setToolTip(self.tr("Fetch new bookings and balances from the bank (FinTS)"))
+        self.button.setToolTip(self.tr("Fetch new bookings and balances from the bank"))
         self.cancel_button.setText(self.tr("Cancel"))
 
     @property
@@ -209,7 +229,7 @@ class FetchControl(QObject):
     def start(self) -> None:
         if self.running:
             return
-        logins = [lg for lg in self.app.settings.app.fints.logins if lg.accounts]
+        logins = [lg for lg in self.app.settings.app.bank_access.logins if lg.accounts]
         if not logins:
             self.setup_needed.emit()
             return
@@ -217,9 +237,9 @@ class FetchControl(QObject):
         with self.app.session() as s:
             for login in logins:
                 starts = [
-                    (link, fetch.fetch_start(s, link))
+                    (link, connections.fetch_start(s, link, login.connector))
                     for link in login.accounts
-                    if fetch.is_fetched(link)
+                    if connections.is_fetched(link)
                 ]
                 if starts:
                     jobs.append(_LoginJob(login, starts))
@@ -235,23 +255,25 @@ class FetchControl(QObject):
             self._import()
             return
         job = self._queue[0]
-        pin = ask_pin(self.window, job.login, rejected)
-        if pin is None:
-            self._queue = []
-            self._current = None
-            self._set_status(self.tr("Fetch cancelled"), final=True)
-            return
-        job.pin = pin
+        label = secret_label(self.app.settings, job.login)
+        if label:
+            secret = ask_secret(self.window, label, job.login, rejected)
+            if secret is None:
+                self._queue = []
+                self._current = None
+                self._set_status(self.tr("Fetch cancelled"), final=True)
+                return
+            job.secret = secret
         self._current = job
         self._set_status(self.tr("Fetching from %1…").replace("%1", job.login.name))
-        product = self.app.settings.app.fints.product_id
-        self.worker = BankWorker(lambda c, j=job: fetch_login(j, product, c), self)
+        settings = self.app.settings
+        self.worker = BankWorker(lambda c, j=job: fetch_login(j, settings, c), self)
         self.worker.confirm_in_app.connect(self._confirm_in_app)
         self.worker.tan_needed.connect(lambda ch: ask_tan(self.window, self.worker, ch))
         self.worker.succeeded.connect(lambda r: setattr(self, "_outcome", (True, r)))
         self.worker.failed.connect(lambda e: setattr(self, "_outcome", (False, e)))
         self.worker.finished.connect(self._worker_finished)
-        self._outcome = (False, bank.BankError("no answer"))
+        self._outcome = (False, ConnectorError("no answer"))
         self.worker.start()
 
     def _worker_finished(self) -> None:
@@ -286,21 +308,21 @@ class FetchControl(QObject):
         self._items += items
         self._missing += missing
         self._queue.pop(0)
-        self._current.pin = ""
+        self._current.secret = ""
         self._next()
 
     def _login_failed(self, error: Exception) -> None:
         self.cancel_button.hide()
         job = self._current
-        job.pin = ""
-        if isinstance(error, bank.PinError):
+        job.secret = ""
+        if isinstance(error, LoginError) and secret_label(self.app.settings, job.login):
             self._next(rejected=True)  # the same login again
             return
         self._queue = []
         self._current = None
-        if isinstance(error, bank.Cancelled):
+        if isinstance(error, Cancelled):
             self._set_status(self.tr("Fetch cancelled"), final=True)
-        elif isinstance(error, bank.Offline):
+        elif isinstance(error, Offline):
             self._set_status(self.tr("Bank not reachable"), str(error), final=True)
         else:
             log.warning("fetch from %s failed: %s", job.login.name, error)
@@ -315,10 +337,9 @@ class FetchControl(QObject):
                 log.warning("backup before fetch failed: %s", e)
         try:
             with self.app.session() as s:
-                result = fetch.import_fetched(s, settings, self._items, retrain=False)
+                result = connections.import_fetched(s, settings, self._items, retrain=False)
             if result.added and settings.app.ml.enabled:
-                with busy(self._set_status, learning_text()), self.app.session() as s:
-                    train_classifier(s, settings)
+                trainer(self.app).start()  # in the background (#55)
         except Exception as e:
             log.exception("importing the fetched bookings failed")
             self._set_status("⚠ " + self.tr("Fetch failed"), str(e))
@@ -329,7 +350,7 @@ class FetchControl(QObject):
         if result.added or result.batch_ids:
             self.fetched.emit()
 
-    def _report(self, result: fetch.FetchResult) -> None:
+    def _report(self, result: connections.FetchResult) -> None:
         lines = []
         for r in result.accounts:
             line = f"{r.account}: " + self.tr("%n new booking(s)", "", r.added)

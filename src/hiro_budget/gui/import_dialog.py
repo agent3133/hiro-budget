@@ -30,23 +30,19 @@ from PySide6.QtWidgets import (
 from hiro_budget.app import App
 from hiro_budget.gui.common import (
     amount_color,
-    busy,
     fit_to_screen,
     flat_table,
     fmt_date,
     fmt_number,
     highlight_color,
-    learning_text,
     money,
     warning_color,
 )
+from hiro_budget.gui.training import trainer
 from hiro_budget.gui.widgets import banner
 from hiro_budget.importers.base import ImportError_
-from hiro_budget.services import import_service
+from hiro_budget.services import import_batch, import_service
 from hiro_budget.services.accounts import StatementGap, statement_gaps
-from hiro_budget.services.backup import create_backup
-from hiro_budget.services.bank import fetch
-from hiro_budget.services.categorization.pipeline import train_classifier
 from hiro_budget.services.import_service import ImportPreview, OverlapMode, statement_link
 
 
@@ -216,13 +212,7 @@ class ImportDialog(QDialog):
         self.plugin_problems.setVisible(bool(lines))
 
     def _preview(self, s, path: Path) -> ImportPreview:
-        return import_service.preview(
-            s,
-            path,
-            match_days=self._days,
-            cutovers=fetch.cutovers(s, self.app.settings),
-            settings=self.app.settings,
-        )
+        return import_batch.preview(s, self.app.settings, path)
 
     def _analyse(self, path: Path) -> Entry:
         entry = Entry(path)
@@ -428,10 +418,6 @@ class ImportDialog(QDialog):
 
     # -- import ----------------------------------------------------------------
 
-    @property
-    def _days(self) -> int:
-        return self.app.settings.app.matching.days
-
     def _importable(self) -> list[Entry]:
         return [e for e in self.entries if e.preview and e.preview.can_commit]
 
@@ -508,77 +494,50 @@ class ImportDialog(QDialog):
         )
         return mode, apply_all.isChecked()
 
-    def _backup_first(self) -> bool:
-        """A backup before the import; on failure the user decides whether to go on."""
-        if not self.app.settings.app.backup.before_import:
-            return True
-        try:
-            create_backup(self.app.settings, "import")
-        except Exception as e:
-            answer = QMessageBox.question(
-                self,
-                self.tr("Backup"),
-                self.tr("The backup before the import failed:\n%1\n\nImport anyway?").replace(
-                    "%1", str(e)
-                ),
-            )
-            return answer == QMessageBox.StandardButton.Yes
-        return True
+    def _go_on_without_backup(self, error: Exception) -> bool:
+        """The backup before the import failed: the user decides whether to go on."""
+        QGuiApplication.restoreOverrideCursor()
+        answer = QMessageBox.question(
+            self,
+            self.tr("Backup"),
+            self.tr("The backup before the import failed:\n%1\n\nImport anyway?").replace(
+                "%1", str(error)
+            ),
+        )
+        QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        return answer == QMessageBox.StandardButton.Yes
 
     def _show_progress(self, text: str) -> None:
         self.progress.setText(text)
         self.progress.setVisible(bool(text))
 
+    def _ask_overlap_with_normal_cursor(self, p: ImportPreview):
+        QGuiApplication.restoreOverrideCursor()
+        try:
+            return self.ask_overlap(p)
+        finally:
+            QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+
     def _import(self) -> None:
-        if not self._backup_first():
-            return
-        added = duplicates = replaced = cancelled = matched = valuations = linked = 0
-        linking = None  # waiting payments after the last import
-        errors: list[str] = []
-        remembered: tuple[OverlapMode | None] | None = None  # "apply to all" choice
         QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
         try:
-            for e in self._importable():
-                try:
-                    # Re-check: an earlier file in this batch may overlap with this one.
-                    with self.app.session() as s:
-                        p = self._preview(s, e.path)
-                    if not p.can_commit:
-                        duplicates += p.duplicate_count
-                        continue
-                    mode = None
-                    if p.overlap is not None:
-                        if remembered is None:
-                            QGuiApplication.restoreOverrideCursor()
-                            mode, apply_all = self.ask_overlap(p)
-                            QGuiApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
-                            if apply_all:
-                                remembered = (mode,)
-                        else:
-                            mode = remembered[0]
-                        if mode is None:
-                            cancelled += 1
-                            continue
-                    with self.app.session() as s:
-                        p = self._preview(s, e.path)
-                        r = import_service.commit(s, self.app.settings, p, mode=mode, retrain=False)
-                    self.imported_any = True
-                    if p.statement.valuation:
-                        valuations += 1
-                        continue
-                    added += r.added
-                    duplicates += r.duplicates
-                    replaced += r.replaced
-                    matched += r.matched
-                    linked += r.linking.linked
-                    linking = r.linking
-                except Exception as ex:  # keep importing the other files
-                    errors.append(f"{e.path.name}: {ex}")
-            if self.imported_any and self.app.settings.app.ml.enabled:
-                with busy(self._show_progress, learning_text()), self.app.session() as s:
-                    train_classifier(s, self.app.settings)
+            batch = import_batch.import_files(
+                self.app.session,
+                self.app.settings,
+                [e.path for e in self._importable()],
+                self._ask_overlap_with_normal_cursor,
+                backup_failed=self._go_on_without_backup,
+            )
+            if batch.stopped:
+                return
+            self.imported_any = self.imported_any or batch.imported_any
+            if batch.imported_any and self.app.settings.app.ml.enabled:
+                trainer(self.app).start()  # in the background (#55)
         finally:
             QGuiApplication.restoreOverrideCursor()
+        added, duplicates, matched = batch.added, batch.duplicates, batch.matched
+        replaced, valuations, linked = batch.replaced, batch.valuations, batch.linked
+        linking, cancelled, errors = batch.linking, batch.count("cancelled"), batch.errors
 
         msg = self.tr("%1 bookings imported, %2 duplicates skipped.")
         msg = msg.replace("%1", str(added)).replace("%2", str(duplicates))

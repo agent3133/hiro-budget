@@ -57,8 +57,9 @@ class AccountHistory:
     def value(self, month: str) -> int:
         """The balance as counted in the totals: the first known one before it."""
         cents = self.balances.get(month)
-        if cents is None and self.estimated(month):
-            cents = self.balances[self.first_known()]
+        first = self.first_known()
+        if cents is None and first is not None and self.estimated(month):
+            cents = self.balances[first]
         return cents or 0
 
 
@@ -104,7 +105,7 @@ class _Balances:
         self.valuations = sorted(
             (b.period_end, b.closing_balance_cents)
             for b in batches
-            if b.valuation and b.closing_balance_cents is not None
+            if b.valuation and b.period_end is not None and b.closing_balance_cents is not None
         )
         self.anchor = account_anchor(account, batches)
 
@@ -172,8 +173,37 @@ def net_worth(session: Session, last_month: str, account_id: int | None = None) 
         h.balances = {m: h.balances[m] for m in months}
     # an account without bookings has no income or expenses that could be missing
     complete = [
-        h.first_known()
+        first
         for h in histories
-        if h.kind != AccountKind.CASH and h.has_bookings and h.first_known() is not None
+        if h.kind != AccountKind.CASH and h.has_bookings and (first := h.first_known()) is not None
     ]
     return NetWorth(months, histories, max(complete) if complete else start)
+
+
+def running_balances(session: Session, account_id: int) -> dict[int, int | None]:
+    """The account's balance after each of its bookings (by booking id), as on a bank
+    statement: the balance at the end of the booking day (the same as the net worth and
+    the accounts page use) minus the later bookings of that day, in booking order (date,
+    id). None where the balance is not known (before the first statement)."""
+    account = session.get(Account, account_id)
+    if account is None:
+        return {}
+    batches = list(session.scalars(select(ImportBatch).where(ImportBatch.account_id == account_id)))
+    rows = session.execute(
+        select(Transaction.id, Transaction.booking_date, Transaction.amount_cents)
+        .where(Transaction.account_id == account_id)
+        .order_by(Transaction.booking_date, Transaction.id)
+    ).all()
+    balances = _Balances(account, batches, [(day, cents) for _, day, cents in rows])
+    result: dict[int, int | None] = {}
+    i = len(rows)
+    while i:  # day by day from the newest, each day from its last booking back
+        day = rows[i - 1][1]
+        running = balances.on(day)
+        while i and rows[i - 1][1] == day:
+            tx_id, _, cents = rows[i - 1]
+            result[tx_id] = running
+            if running is not None:
+                running -= cents
+            i -= 1
+    return result

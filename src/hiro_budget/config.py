@@ -37,17 +37,25 @@ class ConfigError(Exception):
     """Raised when a configuration file is missing or invalid."""
 
 
+class StrictModel(BaseModel):
+    """Base of every configuration model: a misspelt key is an error, not silently ignored
+    (``amout_min`` would drop a rule's amount condition, #77). A key removed in a later
+    version gets a ``mode="before"`` validator that drops it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+
 # --- config.yaml -----------------------------------------------------------------
 
 
-class PatternMatch(BaseModel):
+class PatternMatch(StrictModel):
     """Regex patterns matched against a booking (all given patterns must match)."""
 
     counterparty: str | None = None
     purpose: str | None = None
 
 
-class OwnAccount(BaseModel):
+class OwnAccount(StrictModel):
     name: str
     kind: AccountKind = "giro"
     institution: str | None = None
@@ -65,6 +73,9 @@ class OwnAccount(BaseModel):
     # is a tracking account (e.g. ETF purchases into the depot). Without it, such
     # transfers show up as uncategorized outflow.
     transfer_category: str | None = None
+    # A note on the Overview when no booking came in for a long time (by kind: bank
+    # accounts 5 weeks, cash 6 weeks, securities a quarter). Off e.g. for closed accounts.
+    stale_hint: bool = True
 
     @property
     def is_on_budget(self) -> bool:
@@ -84,7 +95,7 @@ class OwnAccount(BaseModel):
         return normalize_iban(v) if v else None
 
 
-class MortgageConfig(BaseModel):
+class MortgageConfig(StrictModel):
     name: str
     loan_account: str
     interest_category: str
@@ -92,16 +103,18 @@ class MortgageConfig(BaseModel):
     # Budget category for the principal (a transfer to the loan account, which is a
     # tracking account). Without it, the principal shows up as uncategorized outflow.
     principal_category: str | None = None
+    # End of the fixed-rate period (Zinsbindung): the forecast shows the debt left then.
+    fixed_until: date | None = None
 
 
-class MLConfig(BaseModel):
+class MLConfig(StrictModel):
     enabled: bool = True
     min_samples: int = 30
     min_confidence: float = Field(0.6, ge=0.0, le=1.0)
     model_path: str = "data/classifier.npz"
 
 
-class BudgetConfig(BaseModel):
+class BudgetConfig(StrictModel):
     # First budget month "YYYY-MM". None: month of the first booking on a budget account.
     start_month: str | None = Field(None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$")
     # Budget proposals from history: months considered for regular categories and
@@ -110,27 +123,27 @@ class BudgetConfig(BaseModel):
     proposal_round_to: int = Field(10, ge=0, le=1000)
 
 
-class MatchingConfig(BaseModel):
+class MatchingConfig(StrictModel):
     # An imported booking replaces a manual entry on the same account with the same
     # amount whose date differs by at most this many days.
     days: int = Field(7, ge=0, le=60)
 
 
-class BackupConfig(BaseModel):
+class BackupConfig(StrictModel):
     # Copy database and configuration before every import; keep the newest backups.
     before_import: bool = True
     keep: int = Field(10, ge=1, le=100)
 
 
-class DatabaseConfig(BaseModel):
+class DatabaseConfig(StrictModel):
     path: str = "data/finance.db"
 
 
-class LoggingConfig(BaseModel):
+class LoggingConfig(StrictModel):
     level: str = "INFO"
 
 
-class BankAccountLink(BaseModel):
+class BankAccountLink(StrictModel):
     """An account of a bank login and the app account its bookings go to."""
 
     bank_id: str  # IBAN, or the depot number for securities accounts (no IBAN)
@@ -147,30 +160,56 @@ class BankAccountLink(BaseModel):
         return normalize_iban(v)
 
 
-class BankLogin(BaseModel):
-    """Online banking access via FinTS (PIN/TAN). The PIN is never stored here."""
+class BankLogin(StrictModel):
+    """Online banking access through a connector plugin (#82). ``settings`` are the
+    connector's own (validated by its ``login_model`` when used); a secret such as the PIN
+    is never stored."""
 
-    name: str = "ING"
-    bank_code: str = "50010517"
-    server: str = "https://fints.ing.de/fints/"
-    login_id: str
+    connector: str = "fints"  # the connector's name (plugin API, ``importers.connectors``)
+    name: str = "Bank"
+    settings: dict[str, Any] = {}
     accounts: list[BankAccountLink] = []
 
 
-class FintsConfig(BaseModel):
-    # Product ID registered with the Deutsche Kreditwirtschaft. Empty: a placeholder is
-    # sent (the bank may stop accepting unregistered clients).
-    product_id: str | None = None
+class BankAccessConfig(StrictModel):
+    # settings shared by all logins of a connector (connector name -> its options_model)
+    connectors: dict[str, dict[str, Any]] = {}
     logins: list[BankLogin] = []
 
 
-class PluginsConfig(BaseModel):
+def _former_fints(old: Any) -> dict[str, Any]:
+    """The ``fints`` section up to 2026-11 (#82) as ``bank_access`` (the former defaults
+    written out: the FinTS plugin has its own)."""
+    old = old or {}
+    connectors = {"fints": {"product_id": old["product_id"]}} if old.get("product_id") else {}
+    logins = []
+    for lg in old.get("logins") or []:
+        settings = {
+            "bank_code": str(lg.get("bank_code", "50010517")),
+            "server": lg.get("server", "https://fints.ing.de/fints/"),
+            "login_id": str(lg.get("login_id", "")),
+        }
+        logins.append(
+            {
+                "connector": "fints",
+                "name": lg.get("name", "ING"),
+                "settings": settings,
+                "accounts": list(lg.get("accounts") or []),
+            }
+        )
+    return {"connectors": connectors, "logins": logins}
+
+
+class PluginsConfig(StrictModel):
     # User plugins (config/plugins/) with Python code run only when listed here; plugins
     # with CSV formats only, and the built-in ones, need no enabling.
     enabled: list[str] = []
 
 
-class AppConfig(BaseModel):
+class AppConfig(StrictModel):
+    # Folder for database, classifier, backups and view state (#29), e.g. in a cloud folder;
+    # None: the folder of database.path
+    data_folder: str | None = None
     database: DatabaseConfig = DatabaseConfig()
     language: Literal["de", "en"] = "de"
     theme: Literal["system", "light", "dark", "rose_pine", "rose_pine_dark"] = "system"  # look
@@ -183,8 +222,18 @@ class AppConfig(BaseModel):
     matching: MatchingConfig = MatchingConfig()
     budget: BudgetConfig = BudgetConfig()
     backup: BackupConfig = BackupConfig()
-    fints: FintsConfig = FintsConfig()
+    bank_access: BankAccessConfig = BankAccessConfig()
     plugins: PluginsConfig = PluginsConfig()
+
+    @model_validator(mode="before")
+    @classmethod
+    def _migrate_fints(cls, data: Any) -> Any:
+        # config.yaml is rewritten at start (config_edit.migrate_bank_access)
+        if isinstance(data, dict) and "fints" in data:
+            data = dict(data)
+            old = data.pop("fints")
+            data.setdefault("bank_access", _former_fints(old))
+        return data
 
     @field_validator("theme", mode="before")
     @classmethod
@@ -220,7 +269,7 @@ TargetType = Literal["monthly", "by_date", "repeating", "balance"]
 MAX_REPORT_SHIFT_DAYS = 15  # less than the shortest month: a shift moves one month at most
 
 
-class TargetDef(BaseModel):
+class TargetDef(StrictModel):
     """Budget target of a category.
 
     monthly:   assign ``amount`` every month
@@ -241,7 +290,7 @@ class TargetDef(BaseModel):
         return self
 
 
-class CategoryDef(BaseModel):
+class CategoryDef(StrictModel):
     key: str
     name: str
     target: TargetDef | None = None
@@ -255,7 +304,7 @@ class CategoryDef(BaseModel):
 BudgetLevel = Literal["category", "group"]
 
 
-class GroupDef(BaseModel):
+class GroupDef(StrictModel):
     key: str
     name: str
     income: bool = False
@@ -278,7 +327,7 @@ class GroupDef(BaseModel):
         return self.budget == "group"
 
 
-class CategoriesConfig(BaseModel):
+class CategoriesConfig(StrictModel):
     groups: list[GroupDef] = []
 
     @model_validator(mode="after")
@@ -297,7 +346,7 @@ class CategoriesConfig(BaseModel):
 # --- rules.yaml ------------------------------------------------------------------
 
 
-class RuleMatch(BaseModel):
+class RuleMatch(StrictModel):
     counterparty: str | None = None
     merchant: str | None = None
     purpose: str | None = None
@@ -314,13 +363,13 @@ class RuleMatch(BaseModel):
         return self
 
 
-class RuleDef(BaseModel):
+class RuleDef(StrictModel):
     id: str
     category: str
     match: RuleMatch
 
 
-class RulesConfig(BaseModel):
+class RulesConfig(StrictModel):
     rules: list[RuleDef] = []
 
     @model_validator(mode="after")
@@ -337,11 +386,11 @@ class RulesConfig(BaseModel):
 ColumnRef = str | int  # a column by its header name (first one of that name) or its index
 
 
-class CsvFilter(BaseModel):
+class CsvFilter(StrictModel):
     """Rows whose ``column`` equals ``equals`` or one of ``in``, or matches the regex
     ``matches``."""
 
-    model_config = ConfigDict(populate_by_name=True, extra="forbid")
+    model_config = ConfigDict(populate_by_name=True)
 
     column: ColumnRef
     equals: str | None = None
@@ -360,16 +409,12 @@ class CsvFilter(BaseModel):
         return {v for v in (self.equals, *self.in_) if v is not None}
 
 
-class CsvDetect(BaseModel):
-    model_config = ConfigDict(extra="forbid")  # a misspelt key must not be ignored
-
+class CsvDetect(StrictModel):
     header_has: list[str] = Field(min_length=1)  # column names the header row contains
 
 
-class CsvAccount(BaseModel):
+class CsvAccount(StrictModel):
     """Which account the file belongs to (one of them)."""
-
-    model_config = ConfigDict(extra="forbid")  # a misspelt key must not be ignored
 
     name: str | None = None  # a fixed account
     iban_from: str | None = None  # "key;value" line above the header holding the IBAN
@@ -383,9 +428,7 @@ class CsvAccount(BaseModel):
         return self
 
 
-class CsvColumns(BaseModel):
-    model_config = ConfigDict(extra="forbid")  # a misspelt key must not be ignored
-
+class CsvColumns(StrictModel):
     booking_date: ColumnRef
     amount: ColumnRef
     value_date: ColumnRef | None = None
@@ -404,21 +447,17 @@ class CsvColumns(BaseModel):
         return [v] if isinstance(v, (str, int)) else v
 
 
-class CsvFunding(BaseModel):
+class CsvFunding(StrictModel):
     """Rows that move money between a bank account and this one for a payment (PayPal
     pulling it from the Giro). Such a payment is not imported: the bank booking stays the
     expense and gets the payee and article; the rest of a partly funded payment is."""
-
-    model_config = ConfigDict(extra="forbid")  # a misspelt key must not be ignored
 
     rows: CsvFilter
     linked_by: ColumnRef  # column of a funding row naming the payment's ``id``
     bank_match: str = ""  # regex the bank booking's counterparty or purpose must match
 
 
-class CsvFormat(BaseModel):
-    model_config = ConfigDict(extra="forbid")  # a misspelt key must not be ignored
-
+class CsvFormat(StrictModel):
     name: str
     institution: str = ""
     kind: AccountKind = "giro"
@@ -443,10 +482,8 @@ class CsvFormat(BaseModel):
     match_by: Literal["fingerprint", "date_amount"] = "fingerprint"
 
 
-class CsvFormatsConfig(BaseModel):
+class CsvFormatsConfig(StrictModel):
     """The former ``csv_formats.yaml`` (read only to migrate it to plugins)."""
-
-    model_config = ConfigDict(extra="forbid")  # a misspelt key must not be ignored
 
     formats: list[CsvFormat] = []
 
@@ -541,8 +578,23 @@ class Settings:
         return p if p.is_absolute() else self.root / p
 
     @property
+    def data_dir(self) -> Path:
+        """Database, classifier, backups and view state: ``data_folder``, else the
+        database's folder."""
+        if self.app.data_folder:
+            return self.resolve(self.app.data_folder)
+        return self.resolve(self.app.database.path).parent
+
+    def _in_data_dir(self, path: str) -> Path:
+        """With a data folder a relative file name means that file inside it."""
+        p = Path(path)
+        if self.app.data_folder and not p.is_absolute():
+            return self.data_dir / p.name
+        return self.resolve(path)
+
+    @property
     def db_path(self) -> Path:
-        return self.resolve(self.app.database.path)
+        return self._in_data_dir(self.app.database.path)
 
     @property
     def plugins_dir(self) -> Path:
@@ -557,7 +609,7 @@ class Settings:
     def model_path(self) -> Path:
         """The trained classifier; a ``.joblib`` name from configurations of the
         scikit-learn version becomes ``.npz``."""
-        path = self.resolve(self.app.ml.model_path)
+        path = self._in_data_dir(self.app.ml.model_path)
         return path.with_suffix(".npz") if path.suffix == ".joblib" else path
 
     @property

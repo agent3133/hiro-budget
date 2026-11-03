@@ -7,42 +7,39 @@ from pathlib import Path
 
 from PySide6.QtCore import QByteArray, QEvent, QFileSystemWatcher, QPoint, Qt, QTimer, QUrl
 from PySide6.QtGui import (
-    QAction,
-    QActionGroup,
     QContextMenuEvent,
     QDesktopServices,
     QKeySequence,
-    QShortcut,
 )
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
     QFileDialog,
+    QLineEdit,
     QMainWindow,
-    QMenu,
     QMessageBox,
     QToolButton,
     QWidget,
 )
 
-from hiro_budget import __version__
+from hiro_budget import __version__, logfile
 from hiro_budget.app import App
+from hiro_budget.gui import regex_help, shortcuts
 from hiro_budget.gui.accounts_view import AccountsView, saved_balance_list
 from hiro_budget.gui.bank_dialog import BankAccessDialog
 from hiro_budget.gui.bank_fetch import FetchControl
 from hiro_budget.gui.budget_view import BudgetView
 from hiro_budget.gui.common import (
-    busy,
     category_choices,
     learning_text,
     money,
     show_error,
-    with_keys,
 )
 from hiro_budget.gui.config_view import ConfigView
 from hiro_budget.gui.history import History
 from hiro_budget.gui.import_dialog import ImportDialog
 from hiro_budget.gui.import_history_dialog import ImportHistoryDialog
+from hiro_budget.gui.main_menus import MainMenus
 from hiro_budget.gui.navigation import (
     ICON_ACCOUNTS,
     ICON_BACK,
@@ -50,33 +47,29 @@ from hiro_budget.gui.navigation import (
     ICON_BUDGET,
     ICON_CATEGORIES,
     ICON_FETCH,
-    ICON_FILE,
     ICON_FORWARD,
-    ICON_HELP,
     ICON_IMPORT,
     ICON_MOON,
     ICON_OVERVIEW,
     ICON_REPORTS,
-    ICON_SETTINGS,
     ICON_SUN,
-    ICON_TOOLS,
-    ICON_VIEW,
     NavigationView,
     refresh_glyphs,
     set_glyph,
 )
 from hiro_budget.gui.overview_view import OverviewView
-from hiro_budget.gui.report_pages import NetWorthReport, TopPayeesReport
+from hiro_budget.gui.reports import NetWorthReport, TopPayeesReport
 from hiro_budget.gui.reports_view import ReportsView
 from hiro_budget.gui.search import Hit, SearchBox, best
 from hiro_budget.gui.shortcuts_dialog import ShortcutsDialog
 from hiro_budget.gui.theme import apply_theme
 from hiro_budget.gui.titlebar import BadgeButton, TitleBar, side_button
+from hiro_budget.gui.training import trainer
 from hiro_budget.gui.transactions_view import TransactionsView
 from hiro_budget.services import backup, config_edit, export, import_service
 from hiro_budget.services import transactions as txs
-from hiro_budget.services.budget import month_add, month_first_day, month_last_day
-from hiro_budget.services.categorization.pipeline import recategorize_all, train_classifier
+from hiro_budget.services.budget import month_first_day, month_last_day
+from hiro_budget.services.categorization.pipeline import recategorize_all
 from hiro_budget.services.transactions import TransactionRow
 
 PREBUILD_DELAY_MS = 1000  # after the window appeared
@@ -93,18 +86,20 @@ class MainWindow(QMainWindow):
         self._budget_needs_refresh = False
         # The pages are made when they are first shown (or asked for: self.budget, ...).
         self._built: dict[str, QWidget] = {}
+        self._regex_window = None  # Help > Regex cheat sheet…, built when first opened
+        self._guide_window = None  # Help > User guide, likewise
         self.tabs = NavigationView()  # sidebar, Windows 11 style
         for name, title, glyph in (
             ("overview", self.tr("Overview"), ICON_OVERVIEW),
             ("budget", self.tr("Budget"), ICON_BUDGET),
-            ("transactions", self.tr("Transactions"), ICON_BOOKINGS),
+            ("transactions", self.tr("Bookings"), ICON_BOOKINGS),
             ("accounts", self.tr("Accounts"), ICON_ACCOUNTS),
             ("reports", self.tr("Reports"), ICON_REPORTS),
             ("config_view", self.tr("Categories & Rules"), ICON_CATEGORIES),
         ):
             self.tabs.add_lazy_tab(lambda n=name: self._build_page(n), title, glyph)
         self.setCentralWidget(self.tabs)
-        self.tabs.set_heading(self.tr("Family finances"))
+        self.tabs.set_heading("Hiro Budget")  # the product name, never translated
         self.tabs.set_footer(app.settings.db_path.name, str(app.settings.db_path))
         self.tabs.footerClicked.connect(self._open_data_folder)
         self.tabs.set_accounts(saved_balance_list(app))
@@ -113,8 +108,12 @@ class MainWindow(QMainWindow):
 
         self.title_bar = TitleBar(self, self.tabs.toggle)  # in place of the Windows one
         self.title_bar.install()
-        self._build_menus()
+        self._main_menus = MainMenus(self)
+        self._menus = self._main_menus.menus
         self.statusBar().showMessage(str(app.settings.db_path))
+        self.trainer = trainer(app)  # the note while it learns, wherever it was started
+        self.trainer.started.connect(self._training)
+        self.trainer.finished.connect(self._trained)
         self._restore_state()
         self.tabs.currentWidget()  # makes the page the app opens with
         # The bookings take longest to make (~0.5 s): made in the background once the
@@ -153,23 +152,28 @@ class MainWindow(QMainWindow):
             page.show_uncategorized.connect(self._show_uncategorized)
             page.show_review.connect(self._show_review)
             page.show_net_worth.connect(self._show_net_worth)
+            page.show_account.connect(self._show_account_bookings)
         elif name == "budget":
             page = BudgetView(app)
             page.show_transactions.connect(self._show_category_month)
             page.show_uncategorized.connect(self._show_uncategorized_month)
+            page.assignments_changed.connect(self._overview_dirty)
             self._budget_needs_refresh = False
         elif name == "transactions":
             page = TransactionsView(app)
             page.data_changed.connect(self._reports_dirty)
             page.data_changed.connect(self._budget_dirty)
             page.data_changed.connect(self._reload_balances)
+            page.data_changed.connect(self._overview_dirty)
             page.create_rule_requested.connect(self._create_rule)
             page.rules_changed.connect(self._rules_changed)
+            page.card.editor.dirty_changed.connect(self._update_unsaved)
         elif name == "accounts":
             page = AccountsView(app)
             page.balances_changed.connect(self.tabs.set_accounts)
             page.changed.connect(self._config_changed)
             page.new_booking_requested.connect(self._new_booking_in)
+            page.show_account_bookings.connect(self._show_account_bookings)
             page.dirty_changed.connect(self._update_unsaved)
         elif name == "reports":
             page = ReportsView(app)
@@ -181,6 +185,7 @@ class MainWindow(QMainWindow):
         else:
             page = ConfigView(app)
             page.changed.connect(self._config_changed)
+            page.show_bookings.connect(self._show_bookings_subset)
             for editor in (page.categories, page.rules):
                 editor.dirty_changed.connect(self._update_unsaved)
         self._built[name] = page
@@ -196,10 +201,13 @@ class MainWindow(QMainWindow):
             self.tabs.widget(self.PAGES.index("transactions"))  # made, not shown
 
     def _reload_balances(self) -> None:
-        """Bookings changed: the balances in the sidebar (and on the accounts page)."""
+        """Bookings changed: the balances in the sidebar (and on the accounts page), the
+        rule hits on the rules page."""
+        if (config_view := self._if_built("config_view")) is not None:
+            config_view.rules.bookings_changed()
         accounts = self._if_built("accounts")
-        if accounts is not None:
-            accounts.reload_balances()  # tells the sidebar
+        if accounts is not None:  # tells the sidebar; a hidden page draws when shown (#58)
+            accounts.reload_balances(redraw=self._is_current("accounts"))
         else:
             self.tabs.set_accounts(saved_balance_list(self.app))
 
@@ -217,7 +225,13 @@ class MainWindow(QMainWindow):
 
     def _open_data_folder(self) -> None:
         """The folder with the database in Explorer."""
-        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.app.settings.db_path.parent)))
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(self.app.settings.data_dir)))
+
+    def _open_log_folder(self) -> None:
+        """Help > Open log folder: warnings and errors with tracebacks (#79)."""
+        folder = logfile.log_dir(self.app.settings)
+        folder.mkdir(parents=True, exist_ok=True)
+        QDesktopServices.openUrl(QUrl.fromLocalFile(str(folder)))
 
     def create_backup(self) -> None:
         try:
@@ -233,6 +247,15 @@ class MainWindow(QMainWindow):
                 "copy the files back."
             ).replace("%1", str(folder)),
         )
+
+    def restore_backup(self) -> None:
+        """File > Restore backup…: choose one; restored after the window closed (the
+        database is open until then), then the app starts again (#48)."""
+        from hiro_budget.gui.restore_dialog import RestoreDialog
+
+        dialog = RestoreDialog(self.app, self)
+        if dialog.exec() and dialog.request is not None:
+            QTimer.singleShot(0, lambda: self.restart(dialog.request))
 
     def _open_backup_folder(self) -> None:
         folder = backup.backup_dir(self.app.settings)
@@ -292,140 +315,6 @@ class MainWindow(QMainWindow):
 
     # -- menus -----------------------------------------------------------------
 
-    def _build_menus(self) -> None:
-        file_menu = QMenu(self.tr("&File"), self)
-        imp = QAction(self.tr("&Import statements…"), self)
-        imp.setShortcut(QKeySequence("Ctrl+I"))
-        imp.triggered.connect(self.import_statements)
-        file_menu.addAction(imp)
-        file_menu.addAction(self.tr("Fe&tch from bank"), self.fetch_from_bank)
-        new_booking = QAction(self.tr("&New booking…"), self)
-        new_booking.setShortcut(QKeySequence("Ctrl+N"))
-        new_booking.triggered.connect(self._new_booking)
-        file_menu.addAction(new_booking)
-        file_menu.addAction(self.tr("Import &history…"), self.import_history)
-        save = QAction(self.tr("&Save"), self)
-        save.setShortcut(QKeySequence.StandardKey.Save)
-        save.setToolTip(self.tr("Save the changes of the current page"))
-        save.triggered.connect(self.save_page)
-        file_menu.addAction(save)
-        file_menu.addSeparator()
-        export_menu = file_menu.addMenu(self.tr("&Export"))
-        export_menu.addAction(self.tr("&Bookings (current filter)…"), self.export_transactions)
-        export_menu.addAction(self.tr("&Report (current period)…"), self.export_report)
-        file_menu.addSeparator()
-        file_menu.addAction(self.tr("Create &backup"), self.create_backup)
-        file_menu.addAction(self.tr("Open backup &folder"), self._open_backup_folder)
-        file_menu.addSeparator()
-        quit_action = QAction(self.tr("&Quit"), self)
-        quit_action.setShortcut(QKeySequence.StandardKey.Quit)
-        quit_action.triggered.connect(self.close)
-        file_menu.addAction(quit_action)
-
-        view = QMenu(self.tr("&View"), self)
-        self._page_actions: list[QAction] = []  # in the search as pages, not commands
-        for i in range(self.tabs.count()):
-            page = QAction(self.tabs.tabText(i), self)
-            page.setShortcut(QKeySequence(f"Ctrl+{i + 1}"))
-            page.triggered.connect(lambda _=False, i=i: self.show_page(i))
-            view.addAction(page)
-            self._page_actions.append(page)
-        view.addSeparator()
-        for label, keys, step in (
-            (self.tr("&Next page"), ("Ctrl+Tab", "Ctrl+PgDown"), 1),
-            (self.tr("&Previous page"), ("Ctrl+Shift+Tab", "Ctrl+PgUp"), -1),
-        ):
-            act = QAction(label, self)
-            act.setShortcuts([QKeySequence(k) for k in keys])
-            act.triggered.connect(
-                lambda _=False, s=step: self.show_page(self.tabs.currentIndex() + s)
-            )
-            view.addAction(act)
-        view.addSeparator()
-        two_lines = QAction(self.tr("&Two lines per booking"), self)
-        two_lines.setCheckable(True)
-        two_lines.setChecked(bool(self.app.ui_state.get("transactions.two_lines", True)))
-        two_lines.toggled.connect(self._set_two_lines)
-        view.addAction(two_lines)
-        sidebar = QAction(self.tr("&Collapse or expand sidebar"), self)
-        sidebar.setShortcut(QKeySequence("Ctrl+B"))
-        sidebar.triggered.connect(self.tabs.toggle_collapsed)
-        view.addAction(sidebar)
-        find = QAction(self.tr("&Search bookings"), self)
-        find.setShortcut(QKeySequence.StandardKey.Find)
-        find.triggered.connect(self.find_bookings)
-        view.addAction(find)
-        refresh = QAction(self.tr("&Refresh"), self)
-        refresh.setShortcut(QKeySequence.StandardKey.Refresh)
-        refresh.triggered.connect(self.refresh_all)
-        view.addAction(refresh)
-        menu_key = QAction(self.tr("Context &menu"), self)
-        menu_key.setShortcut(QKeySequence("Shift+F10"))
-        menu_key.triggered.connect(self.open_context_menu)
-        view.addAction(menu_key)
-
-        tools = QMenu(self.tr("&Tools"), self)
-        tools.addAction(self.tr("Re-run &categorization"), self.recategorize)
-        tools.addAction(self.tr("Re&train classifier"), self.retrain)
-        tools.addAction(self.tr("Show &uncategorized"), self._show_uncategorized)
-        tools.addAction(self.tr("Show suggestions to &review"), self._show_review)
-        tools.addSeparator()
-        tools.addAction(self.tr("&Reload configuration files"), self.reload_config)
-
-        settings = QMenu(self.tr("&Settings"), self)
-        settings.addAction(self.tr("&Bank access…"), self.bank_access)
-        settings.addAction(self.tr("&Plugins…"), self.plugins_dialog)
-        lang_menu = settings.addMenu(self.tr("&Language"))
-        group = QActionGroup(self)
-        for code, label in (("de", "Deutsch"), ("en", "English")):
-            act = QAction(label, self, checkable=True)
-            act.setChecked(self.app.settings.app.language == code)
-            act.triggered.connect(lambda _=False, c=code: self.set_language(c))
-            group.addAction(act)
-            lang_menu.addAction(act)
-        theme_menu = settings.addMenu(self.tr("&Appearance"))
-        themes = QActionGroup(self)
-        self._theme_actions: dict[str, QAction] = {}
-        for code, label in (
-            ("system", self.tr("As in &Windows")),
-            ("light", self.tr("&Light")),
-            ("dark", self.tr("&Dark")),
-            ("rose_pine", self.tr("&Rosé Pine")),
-            ("rose_pine_dark", self.tr("Rosé Pine d&ark")),
-        ):
-            act = QAction(label, self, checkable=True)
-            act.setChecked(self.app.settings.app.theme == code)
-            act.triggered.connect(lambda _=False, c=code: self.set_theme(c))
-            themes.addAction(act)
-            self._theme_actions[code] = act
-            theme_menu.addAction(act)
-
-        help_menu = QMenu(self.tr("&Help"), self)
-        keys = QAction(self.tr("&Keyboard shortcuts"), self)
-        keys.setShortcut(QKeySequence.StandardKey.HelpContents)
-        keys.triggered.connect(self.show_shortcuts)
-        help_menu.addAction(keys)
-        help_menu.addAction(self.tr("&About"), self._about)
-
-        # no menu bar: the menus are entries at the bottom of the sidebar, Settings lowest
-        for menu, glyph in (
-            (file_menu, ICON_FILE),
-            (view, ICON_VIEW),
-            (tools, ICON_TOOLS),
-            (help_menu, ICON_HELP),
-            (settings, ICON_SETTINGS),
-        ):
-            self.tabs.add_menu(menu, glyph)
-        # shortcuts of closed menus only work when the window has the actions too
-        self._menus = [file_menu, view, tools, help_menu, settings]
-        pending = list(self._menus)
-        while pending:
-            for act in pending.pop().actions():
-                if act.menu() is not None:
-                    pending.append(act.menu())
-                elif not act.shortcut().isEmpty():
-                    self.addAction(act)
-
     # -- title bar -------------------------------------------------------------
 
     def _title_button(self, glyph: str, fallback: str, slot) -> QToolButton:
@@ -442,23 +331,25 @@ class MainWindow(QMainWindow):
         bar = self.title_bar
         self.history = History(self.tabs, self)
         self.back_button = self._title_button(ICON_BACK, "←", self.history.back)
-        self.back_button.setToolTip(with_keys(self.tr("Back"), "Alt+Left"))
+        self.back_button.setToolTip(shortcuts.tip(self.tr("Back"), "back_forward", 0))
         self.forward_button = self._title_button(ICON_FORWARD, "→", self.history.forward)
-        self.forward_button.setToolTip(with_keys(self.tr("Forward"), "Alt+Right"))
+        self.forward_button.setToolTip(shortcuts.tip(self.tr("Forward"), "back_forward", 1))
         bar.add_left(self.back_button)
         bar.add_left(self.forward_button)
         self.history.changed.connect(self._update_history_buttons)
         self._update_history_buttons()
-        for keys, step in (("Alt+Left", -1), ("Alt+Right", 1)):
-            QShortcut(QKeySequence(keys), self, lambda s=step: self._alt_arrow(s))
+        for index, step in ((0, -1), (1, 1)):
+            shortcuts.bind("back_forward", self, lambda s=step: self._alt_arrow(s), index=index)
 
         self.search = SearchBox(self._search, self)
-        keys = QKeySequence("Ctrl+K").toString(QKeySequence.SequenceFormat.NativeText)
+        keys = shortcuts.keys_text("search")
         self.search.setPlaceholderText(
             self.tr("Search pages, commands, accounts, bookings…") + f"  ({keys})"
         )
         bar.set_center(self.search)
-        QShortcut(QKeySequence("Ctrl+K"), self, self.focus_search)
+        shortcuts.bind("search", self, self.focus_search)
+        for index, step in ((0, 1), (1, -1)):
+            shortcuts.bind("regions", self, lambda s=step: self.focus_region(s), index=index)
 
         self.unsaved_button = QToolButton()
         self.unsaved_button.setObjectName("titleUnsaved")
@@ -504,36 +395,40 @@ class MainWindow(QMainWindow):
 
     # -- search (title bar) --------------------------------------------------------
 
+    def focus_region(self, step: int) -> None:
+        """F6 / Shift+F6: the sidebar and the page's areas, round (#69)."""
+        page = self.tabs.currentWidget()
+        regions = [self.tabs.list]
+        regions += [
+            w
+            for w in getattr(page, "focus_regions", lambda: [page])()
+            if w.isVisible() and w.isEnabled() and w.focusPolicy() != Qt.FocusPolicy.NoFocus
+        ] or [page]
+        focus = QApplication.focusWidget()
+        current = next(
+            (
+                i
+                for i, w in enumerate(regions)
+                if focus is not None and (w is focus or w.isAncestorOf(focus))
+            ),
+            -1 if step > 0 else 0,
+        )
+        regions[(current + step) % len(regions)].setFocus(Qt.FocusReason.TabFocusReason)
+
     def focus_search(self) -> None:
         self.search.setFocus()
         self.search.selectAll()
-
-    def _commands(self) -> list[tuple[str, tuple[str, QAction]]]:
-        """Every menu entry as "Menu › Entry", the way to it in its text."""
-        out: list[tuple[str, tuple[str, QAction]]] = []
-        pending = [(menu.title().replace("&", ""), menu) for menu in self._menus]
-        while pending:
-            path, menu = pending.pop(0)
-            for act in menu.actions():
-                if act.isSeparator() or act in self._page_actions:
-                    continue
-                label = f"{path} › {act.text().replace('&', '').rstrip('…').strip()}"
-                if act.menu() is not None:
-                    pending.append((label, act.menu()))
-                elif act.isEnabled():
-                    out.append((label, (label, act)))
-        return out
 
     def _search(self, query: str) -> list[Hit]:
         """Results for the title bar search, by section."""
         hits: list[Hit] = []
         pages = [(self.tabs.tabText(i), i) for i in range(self.tabs.count())]
         for i in best(pages, query, 6):
-            keys = QKeySequence(f"Ctrl+{i + 1}").toString(QKeySequence.SequenceFormat.NativeText)
+            keys = shortcuts.native(shortcuts.sequences("go_to_page")[i])
             hits.append(
                 Hit(self.tr("Pages"), self.tabs.tabText(i), keys, lambda i=i: self.show_page(i))
             )
-        for label, act in best(self._commands(), query, 6):
+        for label, act in best(self._main_menus.commands(), query, 6):
             detail = (
                 "✓"
                 if act.isChecked()
@@ -631,10 +526,8 @@ class MainWindow(QMainWindow):
         self.forward_button.setEnabled(self.history.can_go_forward())
 
     def _alt_arrow(self, step: int) -> None:
-        """Back / forward; on the budget page the previous / next month."""
-        if self._is_current("budget"):
-            self.budget.go(month_add(self.budget.month, step))
-        elif step < 0:
+        """Back / forward, on every page (the budget's months: Alt+PgUp / PgDn, #66)."""
+        if step < 0:
             self.history.back()
         else:
             self.history.forward()
@@ -650,21 +543,31 @@ class MainWindow(QMainWindow):
             ]
         if (accounts := self._if_built("accounts")) is not None:
             editors.append((accounts, self.tr("accounts")))
+        if (bookings := self._if_built("transactions")) is not None:
+            editors.append((bookings.card.editor, self.tr("split")))
         return editors
+
+    @staticmethod
+    def _is_dirty(editor) -> bool:
+        has = getattr(editor, "has_unsaved_changes", None)
+        return has() if has is not None else editor.save_button.isEnabled()
 
     def _update_unsaved(self) -> None:
         if not hasattr(self, "unsaved_button"):  # an editor made before the title bar
             return
-        dirty = [name for e, name in self._editors() if e.save_button.isEnabled()]
+        dirty = [name for e, name in self._editors() if self._is_dirty(e)]
         self.unsaved_button.setVisible(bool(dirty))
         self.unsaved_button.setToolTip(
-            self.tr("Unsaved changes: %1. Click to save them.").replace("%1", ", ".join(dirty))
+            shortcuts.tip(
+                self.tr("Unsaved changes: %1. Click to save them.").replace("%1", ", ".join(dirty)),
+                "save_all",
+            )
         )
 
     def save_all(self) -> None:
         """Save every page with unsaved changes (the marker in the title bar)."""
         for editor, _name in self._editors():
-            if editor.save_button.isEnabled():
+            if self._is_dirty(editor):
                 editor.save()
 
     def _check_import_folder(self) -> None:
@@ -676,7 +579,7 @@ class MainWindow(QMainWindow):
             )
         n = len(self.new_statements)
         self.import_button.set_badge(n > 0)
-        tip = with_keys(self.tr("Import statements"), "Ctrl+I")
+        tip = shortcuts.tip(self.tr("Import statements"), "import")
         if n:
             names = "\n".join(p.name for p in self.new_statements[:8])
             more = "\n…" if n > 8 else ""
@@ -696,15 +599,14 @@ class MainWindow(QMainWindow):
         }
         current = self.app.settings.app.theme
         code = pairs.get(current, "light" if self._is_dark() else "dark")
-        self._theme_actions[code].setChecked(True)
+        self._main_menus.theme_actions[code].setChecked(True)
         self.set_theme(code)
 
     def _update_theme_button(self) -> None:
         dark = self._is_dark()
         set_glyph(self.theme_button, ICON_SUN if dark else ICON_MOON)
-        self.theme_button.setToolTip(
-            self.tr("Switch to light mode") if dark else self.tr("Switch to dark mode")
-        )
+        text = self.tr("Switch to light mode") if dark else self.tr("Switch to dark mode")
+        self.theme_button.setToolTip(shortcuts.tip(text, "light_dark"))
 
     def changeEvent(self, event) -> None:
         # "As in Windows" and Windows switched light / dark: the other symbol
@@ -730,6 +632,28 @@ class MainWindow(QMainWindow):
         if self.fetch_control.running:
             return  # the logins are in use
         BankAccessDialog(self.app, self).exec()
+
+    def data_folder_dialog(self) -> None:
+        from hiro_budget.gui.data_folder_dialog import DataFolderDialog
+
+        DataFolderDialog(self.app, self).exec()
+
+    def show_status(self, text: str) -> None:
+        """A note in the status bar; empty: the database path again."""
+        self.statusBar().showMessage(text or str(self.app.settings.db_path))
+
+    def has_unsaved_changes(self) -> bool:
+        return any(
+            (page := self._if_built(name)) is not None and page.has_unsaved_changes()
+            for name in ("config_view", "accounts", "transactions")
+        )
+
+    def restart(self, request) -> None:
+        """Close the window; ``run_gui`` then carries out ``request`` and starts the app
+        again (data folder moved, #29)."""
+        self.app.restart = request
+        if not self.close():
+            self.app.restart = None
 
     def plugins_dialog(self) -> None:
         from hiro_budget.gui.plugins_dialog import PluginsDialog
@@ -776,6 +700,7 @@ class MainWindow(QMainWindow):
 
     def export_report(self) -> None:
         self.reports.refresh()
+        self.reports.ensure_overview()  # the category totals of the export
         start, end, _ = self.reports._filter()
         path = self._export_path(f"bericht_{start:%Y-%m-%d}_{end:%Y-%m-%d}")
         if path is None:
@@ -799,12 +724,21 @@ class MainWindow(QMainWindow):
         self.refresh_all()
         QMessageBox.information(self, self.tr("Categorization"), str(stats))
 
-    def retrain(self) -> None:
-        def status(text: str) -> None:  # the database path again afterwards
-            self.statusBar().showMessage(text or str(self.app.settings.db_path))
+    def _training(self) -> None:
+        self.show_status(learning_text())
 
-        with busy(status, learning_text()), self.app.session() as s:
-            clf = train_classifier(s, self.app.settings)
+    def _trained(self, _clf, error: str) -> None:
+        self.show_status("")
+        if error:
+            show_error(self, self.tr("Classifier"), error)
+
+    def retrain(self) -> None:
+        """Trains in the background (#55); the questions come when it is done."""
+        self.trainer.start(self._retrained)
+
+    def _retrained(self, clf, error: str) -> None:
+        if error:
+            return  # shown by _trained
         if clf is None:
             QMessageBox.information(
                 self,
@@ -872,6 +806,15 @@ class MainWindow(QMainWindow):
         self.tabs.setCurrentWidget(self.transactions)
         self.transactions.show_filter(txs.UNCATEGORIZED)
 
+    def _show_bookings_subset(self, ids: list[int], label: str) -> None:
+        """Only the given bookings (e.g. the hits of a rule)."""
+        self.tabs.setCurrentWidget(self.transactions)
+        self.transactions.show_ids(ids, label)
+
+    def _show_account_bookings(self, account_id: int) -> None:
+        self.tabs.setCurrentWidget(self.transactions)
+        self.transactions.show_account(account_id)
+
     def _show_net_worth(self) -> None:
         self.tabs.setCurrentWidget(self.reports)
         page = next(p for p in self.reports.pages if isinstance(p, NetWorthReport))
@@ -896,6 +839,8 @@ class MainWindow(QMainWindow):
     def save_page(self) -> None:
         if self._is_current("accounts") and self.accounts.has_unsaved_changes():
             self.accounts.save()
+        elif self._is_current("transactions") and self.transactions.has_unsaved_changes():
+            self.transactions.card.editor.save()
         elif self._is_current("config_view"):
             for editor in (self.config_view.categories, self.config_view.rules):
                 if editor.save_button.isEnabled():
@@ -916,7 +861,30 @@ class MainWindow(QMainWindow):
         QApplication.sendEvent(widget, event)
 
     def show_shortcuts(self) -> None:
+        """F1: the cheat sheet in a regex field, else the keyboard shortcuts."""
+        focus = QApplication.focusWidget()
+        if isinstance(focus, QLineEdit) and focus.property(regex_help.REGEX_HELP):
+            regex_help.show_popup(focus)
+            return
         ShortcutsDialog(self).exec()
+
+    def show_regex_help(self) -> None:
+        """Help > Regex cheat sheet…: one window, kept open beside the app."""
+        if self._regex_window is None:
+            self._regex_window = regex_help.RegexHelpWindow(self)
+        self._regex_window.show()
+        self._regex_window.raise_()
+        self._regex_window.activateWindow()
+
+    def show_guide(self) -> None:
+        """Help > User guide: one window in the UI language, kept open beside the app."""
+        if self._guide_window is None:
+            from hiro_budget.gui.guide import GuideWindow
+
+            self._guide_window = GuideWindow(self.app.settings.app.language, self)
+        self._guide_window.show()
+        self._guide_window.raise_()
+        self._guide_window.activateWindow()
 
     def _about(self) -> None:
         QMessageBox.about(
@@ -938,9 +906,13 @@ class MainWindow(QMainWindow):
         """Data or configuration changed: the pages made so far show it again (the others
         load it when they are made)."""
         if (page := self._if_built("transactions")) is not None:
-            page.reload_filters()
+            if self._is_current("transactions"):
+                page.reload_filters()
+            else:  # 0.2-0.65 s for all bookings: only when it is shown again (#56)
+                page.stale = True
         if (page := self._if_built("reports")) is not None:
             page.reload()
+        self._overview_dirty()
         self._reload_balances()
         if (page := self._if_built("budget")) is not None:
             page.refresh()
@@ -949,6 +921,15 @@ class MainWindow(QMainWindow):
 
     def _reports_dirty(self) -> None:
         self._reports_need_refresh = True
+
+    def _overview_dirty(self) -> None:
+        """Bookings, budget or configuration changed: the overview computes again, now
+        when it is the current page, else when it is shown (#61)."""
+        if (page := self._if_built("overview")) is not None:
+            if self._is_current("overview"):
+                page.refresh()
+            else:
+                page.stale = True
 
     def _budget_dirty(self) -> None:
         self._budget_needs_refresh = True
@@ -985,6 +966,12 @@ class MainWindow(QMainWindow):
         self.config_view.rules.prefill_from(row)
 
     def _new_booking(self) -> None:
+        """Ctrl+N: on the accounts page in the selected account (#68)."""
+        if self._is_current("accounts"):
+            current = self.accounts._current()
+            if current is not None and current.balance is not None:
+                self._new_booking_in(current.balance.account_id)
+                return
         self.tabs.setCurrentWidget(self.transactions)
         self.transactions.new_booking()
 
@@ -1002,18 +989,20 @@ class MainWindow(QMainWindow):
         return handled if handled is not None else super().nativeEvent(event_type, message)
 
     def closeEvent(self, event) -> None:
-        if any(
-            (page := self._if_built(name)) is not None and page.has_unsaved_changes()
-            for name in ("config_view", "accounts")
-        ):
+        if self.has_unsaved_changes():
             answer = QMessageBox.question(
                 self,
                 self.tr("Unsaved changes"),
-                self.tr("Categories, rules or accounts have unsaved changes. Quit anyway?"),
+                self.tr("There are unsaved changes (%1). Quit anyway?").replace(
+                    "%1", ", ".join(n for e, n in self._editors() if self._is_dirty(e))
+                ),
             )
             if answer != QMessageBox.StandardButton.Yes:
                 event.ignore()
                 return
         self.fetch_control.shutdown()
         self.save_state()
+        if self.trainer.running:  # let it save the new model
+            self.hide()
+            self.trainer.wait()
         event.accept()

@@ -2,14 +2,23 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import date
 
 from sqlalchemy import Select, and_, exists, func, or_, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.exc import NoResultFound
+from sqlalchemy.orm import Session, aliased
 
 from hiro_budget.config import Settings
-from hiro_budget.db.models import Account, Category, Split, SplitSource, Transaction
+from hiro_budget.db.models import (
+    Account,
+    Category,
+    CategoryGroup,
+    Split,
+    SplitSource,
+    Transaction,
+)
 from hiro_budget.services.categorization.pipeline import Categorizer
 from hiro_budget.services.counterparts import (
     MANUAL_TYPE,
@@ -39,6 +48,88 @@ class TxFilter:
     account_id: int | None = None
     category: str | int = ALL  # a constant above, group_filter(id) or a category id
     text: str = ""
+    ids: tuple[int, ...] | None = None  # only these bookings (e.g. the hits of a rule)
+    ids_label: str = ""  # what they are, shown above the list
+
+
+_NUMBER = r"[+-]?\d[\d.,]*"
+_RANGE = re.compile(rf"^({_NUMBER})\s*(?:\.\.|–|…)\s*({_NUMBER})$")
+_BOUND = re.compile(rf"^(>=|<=|>|<)\s*({_NUMBER})$")
+_SINGLE = re.compile(rf"^({_NUMBER})$")
+
+
+@dataclass(frozen=True)
+class AmountQuery:
+    """Amounts a search text stands for, in cents (inclusive bounds, None: open).
+    ``signed``: compare with the booking's amount, else with its absolute value."""
+
+    low: int | None
+    high: int | None
+    signed: bool = False
+
+
+def _cents(text: str) -> tuple[int, bool] | None:
+    """ "17,99" / "17.99" / "1.234,56" / "-5" -> (cents, has decimals); None if no number."""
+    sign = -1 if text.startswith("-") else 1
+    text = text.lstrip("+-")
+    if "," in text and "." in text:  # the last one is the decimal separator
+        dec = "," if text.rfind(",") > text.rfind(".") else "."
+        text = text.replace("." if dec == "," else ",", "").replace(dec, ".")
+    elif "," in text:
+        text = text.replace(",", ".")
+    elif text.count(".") == 1 and len(text.rsplit(".", 1)[1]) == 3:
+        text = text.replace(".", "")  # "1.234": thousands
+    elif text.count(".") > 1:
+        text = text.replace(".", "")  # "1.234.567"
+    if text.count(".") > 1 or not re.fullmatch(r"\d+(\.\d{0,2})?", text):
+        return None
+    euros, _, frac = text.partition(".")
+    return sign * (int(euros) * 100 + int((frac + "00")[:2])), bool(frac)
+
+
+def parse_amount_query(text: str) -> AmountQuery | None:
+    """An amount search: "17,99" (±17,99 €), "-17,99" (only that expense), "17" (17,00 to
+    17,99 €), "100..200", ">500", "<=50"; "€" and spaces are ignored. None: no amount."""
+    t = text.strip().replace("€", "").replace("EUR", "").replace(" ", "")
+    if m := _RANGE.match(t):
+        a, b = _cents(m[1]), _cents(m[2])
+        if a is None or b is None:
+            return None
+        signed = m[1][0] in "+-" or m[2][0] in "+-"
+        low, high = sorted((a[0], b[0] if b[1] else b[0] + (99 if b[0] >= 0 else 0)))
+        return AmountQuery(low, high, signed)
+    if m := _BOUND.match(t):
+        v = _cents(m[2])
+        if v is None:
+            return None
+        cents, op, signed = v[0], m[1], m[2][0] in "+-"
+        if op == ">":
+            return AmountQuery(cents + 1, None, signed)
+        if op == ">=":
+            return AmountQuery(cents, None, signed)
+        if op == "<":
+            return AmountQuery(None if signed else 0, cents - 1, signed)
+        return AmountQuery(None if signed else 0, cents, signed)
+    if m := _SINGLE.match(t):
+        v = _cents(m[1])
+        if v is None:
+            return None
+        cents, decimals = v
+        if decimals:
+            return AmountQuery(cents, cents, m[1][0] in "+-")
+        whole = (cents, cents + 99) if cents >= 0 else (cents - 99, cents)
+        return AmountQuery(*whole, m[1][0] in "+-")
+    return None
+
+
+def _amount_condition(q: AmountQuery):
+    amount = Transaction.amount_cents if q.signed else func.abs(Transaction.amount_cents)
+    parts = []
+    if q.low is not None:
+        parts.append(amount >= q.low)
+    if q.high is not None:
+        parts.append(amount <= q.high)
+    return and_(*parts)
 
 
 @dataclass
@@ -110,23 +201,6 @@ class TransactionRow:
         return None
 
 
-def _split_view(s: Split) -> SplitView:
-    return SplitView(
-        category_id=s.category_id,
-        category_key=s.category.key if s.category else None,
-        category_name=s.category.name if s.category else None,
-        group_name=s.category.group.name if s.category else None,
-        transfer_account_id=s.transfer_account_id,
-        transfer_account_name=s.transfer_account.name if s.transfer_account else None,
-        amount_cents=s.amount_cents,
-        memo=s.memo,
-        source=s.source,
-        rule_id=s.rule_id,
-        confidence=s.confidence,
-        needs_category=needs_category(s),
-    )
-
-
 def leaves_budget(source: Account, target: Account | None) -> bool:
     """True for a transfer from a budget account to a tracking account."""
     return target is not None and source.on_budget and not target.on_budget
@@ -140,33 +214,9 @@ def needs_category(s: Split) -> bool:
     return leaves_budget(s.transaction.account, s.transfer_account) and s.amount_cents < 0
 
 
-def _row(tx: Transaction) -> TransactionRow:
-    return TransactionRow(
-        id=tx.id,
-        booking_date=tx.booking_date,
-        value_date=tx.value_date,
-        account_name=tx.account.name,
-        booking_type=tx.booking_type,
-        payee=tx.display_name,
-        counterparty=tx.counterparty,
-        merchant=tx.merchant,
-        purpose=tx.purpose,
-        amount_cents=tx.amount_cents,
-        raw_text=tx.raw_text,
-        mandate_ref=tx.mandate_ref,
-        reference=tx.reference,
-        notes=tx.notes,
-        account_id=tx.account_id,
-        is_manual_entry=tx.is_manual_entry,
-        counterpart_of=tx.counterpart_of.account.name if tx.counterpart_of else None,
-        details=tx.details,
-        counterpart_of_id=tx.counterpart_of_id,
-        counterparts=[(c.id, c.account.name) for c in tx.counterparts],
-        splits=[_split_view(s) for s in tx.splits],
-    )
-
-
 def _apply_filter(q: Select, f: TxFilter) -> Select:
+    if f.ids is not None:
+        q = q.where(Transaction.id.in_(f.ids))
     if f.date_from:
         q = q.where(Transaction.booking_date >= f.date_from)
     if f.date_to:
@@ -175,15 +225,16 @@ def _apply_filter(q: Select, f: TxFilter) -> Select:
         q = q.where(Transaction.account_id == f.account_id)
     if f.text.strip():
         like = f"%{f.text.strip()}%"
-        q = q.where(
-            or_(
-                Transaction.counterparty.ilike(like),
-                Transaction.merchant.ilike(like),
-                Transaction.purpose.ilike(like),
-                Transaction.notes.ilike(like),
-                Transaction.details.ilike(like),
-            )
-        )
+        matches = [
+            Transaction.counterparty.ilike(like),
+            Transaction.merchant.ilike(like),
+            Transaction.purpose.ilike(like),
+            Transaction.notes.ilike(like),
+            Transaction.details.ilike(like),
+        ]
+        if (amount := parse_amount_query(f.text)) is not None:
+            matches.append(_amount_condition(amount))  # "17,99" also finds the text
+        q = q.where(or_(*matches))
     split = select(Split.id).where(Split.transaction_id == Transaction.id)
     match f.category:
         case str() if f.category == UNCATEGORIZED:
@@ -217,22 +268,139 @@ def _apply_filter(q: Select, f: TxFilter) -> Select:
     return q
 
 
+_TX_COLUMNS = (
+    Transaction.id,
+    Transaction.booking_date,
+    Transaction.value_date,
+    Transaction.account_id,
+    Transaction.booking_type,
+    Transaction.counterparty,
+    Transaction.merchant,
+    Transaction.purpose,
+    Transaction.amount_cents,
+    Transaction.raw_text,
+    Transaction.mandate_ref,
+    Transaction.reference,
+    Transaction.notes,
+    Transaction.batch_id,
+    Transaction.details,
+    Transaction.counterpart_of_id,
+)
+
+
 def list_transactions(
     session: Session, f: TxFilter | None = None, limit: int | None = None
 ) -> list[TransactionRow]:
-    """Bookings of the filter, newest first (only the newest ``limit``, if given)."""
-    q = select(Transaction).options(
-        selectinload(Transaction.account),
-        selectinload(Transaction.splits).selectinload(Split.category).selectinload(Category.group),
-        selectinload(Transaction.splits).selectinload(Split.transfer_account),
-        selectinload(Transaction.counterpart_of).selectinload(Transaction.account),
-        selectinload(Transaction.counterparts).selectinload(Transaction.account),
+    """Bookings of the filter, newest first (only the newest ``limit``, if given).
+
+    Plain columns in three queries (bookings, their splits, their counter-bookings) and the
+    few accounts and categories once, no ORM entities: ten years of bookings in a fraction
+    of the time the entities took (#56)."""
+    session.flush()  # pending edits, as the ORM query did by autoflush
+    accounts = {
+        a.id: (a.name, a.on_budget)
+        for a in session.execute(select(Account.id, Account.name, Account.on_budget))
+    }
+    categories = {
+        c.id: (c.key, c.name, c.group_name)
+        for c in session.execute(
+            select(
+                Category.id, Category.key, Category.name, CategoryGroup.name.label("group_name")
+            ).join(CategoryGroup, CategoryGroup.id == Category.group_id)
+        )
+    }
+    source = aliased(Transaction)
+    q: Select = select(*_TX_COLUMNS, source.account_id.label("source_account_id")).outerjoin(
+        source, source.id == Transaction.counterpart_of_id
     )
     q = _apply_filter(q, f or TxFilter())
     q = q.order_by(Transaction.booking_date.desc(), Transaction.id.desc())
     if limit is not None:
         q = q.limit(limit)
-    return [_row(tx) for tx in session.scalars(q)]
+    tx_rows = session.execute(q).all()
+    if not tx_rows:
+        return []
+    ids = q.with_only_columns(Transaction.id).order_by(None).scalar_subquery()
+    if limit is not None:  # LIMIT needs its ORDER BY inside the subquery
+        ids = q.with_only_columns(Transaction.id).scalar_subquery()
+
+    splits: dict[int, list[SplitView]] = {}
+    account_of = {r.id: r.account_id for r in tx_rows}
+    for s in session.execute(
+        select(
+            Split.transaction_id,
+            Split.category_id,
+            Split.transfer_account_id,
+            Split.amount_cents,
+            Split.memo,
+            Split.source,
+            Split.rule_id,
+            Split.confidence,
+        )
+        .where(Split.transaction_id.in_(ids))
+        .order_by(Split.id)
+    ):
+        cat = categories.get(s.category_id) if s.category_id is not None else None
+        target = accounts.get(s.transfer_account_id) if s.transfer_account_id else None
+        if cat is not None:
+            needs = False
+        elif target is None:
+            needs = True
+        else:  # a transfer leaving the budget for a tracking account needs a category
+            needs = accounts[account_of[s.transaction_id]][1] and not target[1]
+            needs = needs and s.amount_cents < 0
+        splits.setdefault(s.transaction_id, []).append(
+            SplitView(
+                category_id=s.category_id,
+                category_key=cat[0] if cat else None,
+                category_name=cat[1] if cat else None,
+                group_name=cat[2] if cat else None,
+                transfer_account_id=s.transfer_account_id,
+                transfer_account_name=target[0] if target else None,
+                amount_cents=s.amount_cents,
+                memo=s.memo,
+                source=s.source,
+                rule_id=s.rule_id,
+                confidence=s.confidence,
+                needs_category=needs,
+            )
+        )
+    counterparts: dict[int, list[tuple[int, str]]] = {}
+    for c in session.execute(
+        select(Transaction.counterpart_of_id, Transaction.id, Transaction.account_id)
+        .where(Transaction.counterpart_of_id.in_(ids))
+        .order_by(Transaction.id)
+    ):
+        counterparts.setdefault(c.counterpart_of_id, []).append((c.id, accounts[c.account_id][0]))
+
+    return [
+        TransactionRow(
+            id=r.id,
+            booking_date=r.booking_date,
+            value_date=r.value_date,
+            account_name=accounts[r.account_id][0],
+            booking_type=r.booking_type,
+            payee=r.merchant or r.counterparty,
+            counterparty=r.counterparty,
+            merchant=r.merchant,
+            purpose=r.purpose,
+            amount_cents=r.amount_cents,
+            raw_text=r.raw_text,
+            mandate_ref=r.mandate_ref,
+            reference=r.reference,
+            notes=r.notes,
+            account_id=r.account_id,
+            is_manual_entry=r.batch_id is None,
+            counterpart_of=(
+                accounts[r.source_account_id][0] if r.counterpart_of_id is not None else None
+            ),
+            details=r.details,
+            counterpart_of_id=r.counterpart_of_id,
+            counterparts=counterparts.get(r.id, []),
+            splits=splits.get(r.id, []),
+        )
+        for r in tx_rows
+    ]
 
 
 def count_transactions(session: Session, f: TxFilter) -> int:
@@ -242,19 +410,101 @@ def count_transactions(session: Session, f: TxFilter) -> int:
 
 
 def get_row(session: Session, tx_id: int) -> TransactionRow:
-    return _row(session.get_one(Transaction, tx_id))
+    rows = list_transactions(session, TxFilter(ids=(tx_id,)))
+    if not rows:
+        raise NoResultFound(f"no booking {tx_id}")
+    return rows[0]
 
 
 def review_count(session: Session) -> int:
     """Bookings with a category suggested by the classifier (not yet confirmed)."""
-    return session.scalar(
+    return session.execute(
         select(func.count(func.distinct(Split.transaction_id))).where(
             Split.source == SplitSource.ML
         )
-    )
+    ).scalar_one()
 
 
 # --- manual edits -------------------------------------------------------------------
+
+
+HISTORY_LAST = 5  # earlier bookings the card lists
+HISTORY_DAYS = 365  # count and average over this many days up to the booking
+PRICE_STEADY = 3  # this many equal amounts before a different one: a price change
+
+
+@dataclass
+class PayeeBooking:
+    id: int
+    booking_date: date
+    amount_cents: int
+
+
+@dataclass
+class PayeeHistory:
+    """The other bookings of a booking's payee (same name, ignoring digits and case, as
+    the payees report groups them), for the booking card (#50)."""
+
+    name: str
+    ids: list[int]  # all bookings of the payee, this one included
+    year_count: int  # bookings in the 12 months up to this one, this one included
+    year_average: int  # their average amount (cents, signed)
+    last: list[PayeeBooking]  # the newest others, newest first
+    previous_amount: int | None = None  # a steady amount before this one changed
+
+
+def payee_history(session: Session, tx_id: int) -> PayeeHistory | None:
+    """None when the booking has no payee name or is the payee's only booking."""
+    from datetime import timedelta
+
+    from hiro_budget.services.recurring import payee_key
+
+    tx = session.get(Transaction, tx_id)
+    if tx is None:
+        return None
+    name = tx.merchant or tx.counterparty or ""
+    key = payee_key(name)
+    if not key:
+        return None
+    like = f"%{max(key.split(), key=len)}%"  # narrows in SQL; the key decides below
+    rows = session.execute(
+        select(
+            Transaction.id,
+            Transaction.booking_date,
+            Transaction.amount_cents,
+            Transaction.merchant,
+            Transaction.counterparty,
+        )
+        .where(or_(Transaction.merchant.ilike(like), Transaction.counterparty.ilike(like)))
+        .order_by(Transaction.booking_date.desc(), Transaction.id.desc())
+    ).all()
+    same = [
+        PayeeBooking(i, day, cents)
+        for i, day, cents, merchant, counterparty in rows
+        if payee_key(merchant or counterparty or "") == key
+    ]
+    others = [b for b in same if b.id != tx.id]
+    if not others:
+        return None
+    start = tx.booking_date - timedelta(days=HISTORY_DAYS)
+    year = [b for b in same if start < b.booking_date <= tx.booking_date]
+    before = [b for b in others if (b.booking_date, b.id) < (tx.booking_date, tx.id)]
+    steady = before[:PRICE_STEADY]
+    previous = None
+    if (
+        len(steady) == PRICE_STEADY
+        and len({b.amount_cents for b in steady}) == 1
+        and steady[0].amount_cents != tx.amount_cents
+    ):
+        previous = steady[0].amount_cents
+    return PayeeHistory(
+        name=name,
+        ids=[b.id for b in same],
+        year_count=len(year),
+        year_average=round(sum(b.amount_cents for b in year) / len(year)) if year else 0,
+        last=others[:HISTORY_LAST],
+        previous_amount=previous,
+    )
 
 
 @dataclass
@@ -270,7 +520,7 @@ class SplitError(ValueError):
 
 
 def _check_editable(tx: Transaction) -> None:
-    if tx.is_counterpart:
+    if tx.counterpart_of is not None:
         raise SplitError(
             "this is the counter-booking of a transfer; change the transfer on the "
             f"original booking in account '{tx.counterpart_of.account.name}'"
@@ -315,7 +565,7 @@ def set_splits(
 
 
 def set_category(
-    session: Session, tx_id: int, category_id: int, days: int = DEFAULT_MATCH_DAYS
+    session: Session, tx_id: int, category_id: int | None, days: int = DEFAULT_MATCH_DAYS
 ) -> None:
     tx = session.get_one(Transaction, tx_id)
     transfer = None

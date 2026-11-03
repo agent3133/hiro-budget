@@ -23,7 +23,7 @@ from PySide6.QtGui import (
     QPalette,
     QPen,
 )
-from PySide6.QtWidgets import QSizePolicy, QToolTip, QWidget
+from PySide6.QtWidgets import QMenu, QSizePolicy, QToolTip, QWidget
 
 from hiro_budget.gui import theme
 from hiro_budget.gui.common import is_dark
@@ -73,6 +73,10 @@ class SankeyChart(QWidget):
         self.nodes: list[SankeyNode] = []
         self.links: list[SankeyLink] = []
         self.empty_text = ""
+        # a node's breakdown also from the keyboard: Shift+F10 / menu key (#70)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
+        self.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.customContextMenuRequested.connect(self.drill_menu)
         self._boxes: list[_Box] = []
         self._paths: list[QPainterPath] = []
         self._hover: tuple[str, int] | None = None  # ("node" | "link", index)
@@ -339,6 +343,22 @@ class SankeyChart(QWidget):
             self._hover = None
             self.update()
         super().leaveEvent(event)
+
+    def drill_menu(self, pos) -> None:
+        """The nodes as a menu, column by column; an entry opens what a double-click does."""
+        if not self.nodes:
+            return
+        menu = QMenu(self)
+        column = None
+        for i in sorted(range(len(self.nodes)), key=lambda i: self.nodes[i].column):
+            node = self.nodes[i]
+            if column is not None and node.column != column:
+                menu.addSeparator()
+            column = node.column
+            menu.addAction(
+                f"{node.label}  {node.value_text}", lambda i=i: self.node_activated.emit(i)
+            )
+        menu.exec(self.mapToGlobal(pos))
 
     def mouseDoubleClickEvent(self, event) -> None:
         hit = self._hit(event.position())

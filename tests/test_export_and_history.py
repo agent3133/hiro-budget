@@ -97,6 +97,29 @@ def test_export_transactions_xlsx(imported, tmp_path: Path) -> None:
     assert ws.cell(row=2, column=1).is_date
 
 
+FORMULA_TEXTS = ["=1+1", '=HYPERLINK("https://x","Refund")', "+49 30", "-x", "@SUM(1)", "\tx"]
+
+
+def test_export_writes_formula_like_texts_as_text(tmp_path: Path) -> None:
+    """#74: booking texts come from third parties and must not become formulas."""
+    keys = ["booking_date", "counterparty", "split_amount"]
+    data = [[None, text, -12.5] for text in FORMULA_TEXTS]
+    xlsx = tmp_path / "b.xlsx"
+    export.write_xlsx(xlsx, [("sheet_bookings", keys, data)], "en")
+    ws = load_workbook(xlsx)["Bookings"]
+    cells = [ws.cell(row=r, column=2) for r in range(2, 2 + len(FORMULA_TEXTS))]
+    assert [c.data_type for c in cells] == ["s"] * len(FORMULA_TEXTS)
+    assert [c.value for c in cells] == FORMULA_TEXTS
+    assert ws.cell(row=2, column=3).value == -12.5  # numbers stay numbers
+
+    path = tmp_path / "b.csv"
+    export.write_csv(path, keys, data, "de")
+    with path.open(encoding="utf-8-sig", newline="") as f:
+        body = list(csv.reader(f, delimiter=";"))[1:]
+    assert [r[1] for r in body] == ["'" + t for t in FORMULA_TEXTS]
+    assert {r[2] for r in body} == {"-12,50"}  # a negative amount gets no quote
+
+
 def test_export_report(imported, tmp_path: Path) -> None:
     with imported.session() as s:
         months, cats = reports.monthly_totals(s), reports.category_totals(s)

@@ -1,21 +1,26 @@
-"""Plugins: every importer is one (issue #24).
+"""Plugins: every way bookings come in is one (issues #24, #82).
 
-A plugin is a folder with a ``plugin.yaml`` manifest. It provides importers (Python
-classes), CSV formats (``*.csv.yaml`` for the generic CSV engine), and enrichers (functions
-that derive merchant and purchase date from a bank's booking texts), or is a library that
-other plugins require. Built-in plugins live in the package ``hiro_budget.plugins``,
-user plugins in ``config/plugins/``.
+A plugin is a folder with a ``plugin.yaml`` manifest (plugin API 2). It provides file
+importers (Python classes reading a statement file), CSV formats (``*.csv.yaml`` for the
+generic CSV engine, which turns each into a file importer), connectors (Python classes
+fetching from a bank, ``importers.connectors``) and enrichers (functions that derive
+merchant and purchase date from a bank's booking texts), or is a library that other plugins
+require. All of them deliver a ``ParsedStatement``. Built-in plugins live in the package
+``hiro_budget.plugins``, user plugins in ``config/plugins/``.
 
 ``discover`` reads the manifests and decides which plugins are available:
 
 - a manifest must be valid (unknown keys are errors), name its folder and an API version
   of ``plugin_api``;
-- a user plugin with Python code (importers, enrichers) runs only when the user enabled it
-  (``plugins.enabled`` in config.yaml); plugins with CSV formats only need no enabling;
+- a user plugin with Python code (importers, connectors, enrichers, or any module file) runs
+  only when
+  the user enabled it (``plugins.enabled`` in config.yaml); plugins with CSV formats only
+  need no enabling;
 - a user plugin with the name of a built-in one replaces it;
 - a plugin whose requirement is missing, unavailable or circular is not available.
 
-Python modules are imported only when the registry is asked for importers or enrichers;
+Python modules are imported only when the registry is asked for importers, connectors or
+enrichers;
 plugin code imports other plugins through ``plugin_api.module`` so that a replaced plugin
 is used everywhere. Every failure is recorded as a problem of its plugin and skips it.
 """
@@ -23,23 +28,34 @@ is used everywhere. Every failure is recorded as a problem of its plugin and ski
 from __future__ import annotations
 
 import importlib
+import importlib.machinery
 import logging
 import re
 import sys
 import types
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
-from hiro_budget.config import CSV_FORMATS_FILE, CsvFormat, load_yaml, save_yaml
-from hiro_budget.importers.base import Importer
+from hiro_budget.config import (
+    CSV_FORMATS_FILE,
+    CsvFormat,
+    OwnAccount,
+    Settings,
+    load_yaml,
+    save_yaml,
+)
+from hiro_budget.importers.base import FileImporter
+from hiro_budget.importers.connectors import Connector
 
 log = logging.getLogger(__name__)
 
-API_VERSIONS = frozenset({1})  # plugin API versions this app supports
+# Plugin API versions this app supports. 2 (#82): connectors next to file importers; all
+# plugins are built in or the user's own, so version 1 was replaced without a transition.
+API_VERSIONS = frozenset({2})
 MANIFEST = "plugin.yaml"
 BUILTIN_PACKAGE = "hiro_budget.plugins"
 USER_PACKAGE = "hiro_budget_user_plugins"  # synthetic package of config/plugins/
@@ -49,6 +65,9 @@ Enricher = Callable[..., tuple[str | None, object]]
 
 
 class ImporterEntry(BaseModel):
+    """A class of the plugin: a file importer (``importers``) or a connector
+    (``connectors``)."""
+
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     module: str = Field(pattern=r"^[A-Za-z_]\w*$")  # in the plugin folder
@@ -73,8 +92,9 @@ class PluginManifest(BaseModel):
     api: int
     description: str = ""
     requires: list[str] = []
-    importers: list[ImporterEntry] = []
+    importers: list[ImporterEntry] = []  # file importers
     formats: list[str] = []  # *.csv.yaml files in the plugin folder
+    connectors: list[ImporterEntry] = []
     enrichers: list[EnricherEntry] = []
 
     @field_validator("version", mode="before")
@@ -83,8 +103,8 @@ class PluginManifest(BaseModel):
         return str(v) if isinstance(v, (int, float)) else v  # "version: 1" in YAML
 
     @property
-    def has_code(self) -> bool:
-        return bool(self.importers or self.enrichers)
+    def declares_code(self) -> bool:
+        return bool(self.importers or self.connectors or self.enrichers)
 
 
 Status = Literal["available", "disabled", "replaced", "error"]
@@ -107,11 +127,28 @@ class Plugin:
     def package(self) -> str:
         return f"{self.parent_package}.{self.name}"
 
+    @property
+    def spec(self) -> PluginManifest:
+        """The manifest; every plugin that is not an error has one."""
+        assert self.manifest is not None
+        return self.manifest
+
+    @property
+    def has_code(self) -> bool:
+        """Declares importers/connectors/enrichers or holds any importable module (``.py``,
+        ``.pyc``,
+        extension module): another plugin can import those through ``plugin_api.module``,
+        so a "library" plugin without a declared importer is code, too (#73)."""
+        if self.manifest is not None and self.manifest.declares_code:
+            return True
+        suffixes = tuple(importlib.machinery.all_suffixes())
+        return any(f.is_file() and f.name.endswith(suffixes) for f in self.path.rglob("*"))
+
 
 class _SafeImporter:
     """An importer whose ``detect`` failing does not stop the import of other files."""
 
-    def __init__(self, inner: Importer, registry: PluginRegistry, plugin: Plugin) -> None:
+    def __init__(self, inner: FileImporter, registry: PluginRegistry, plugin: Plugin) -> None:
         self.inner, self.registry, self.plugin = inner, registry, plugin
         self.name = inner.name
 
@@ -129,7 +166,9 @@ class _SafeImporter:
 @dataclass
 class PluginRegistry:
     plugins: list[Plugin] = field(default_factory=list)  # all found, in detection order
-    _importers: list[Importer] | None = None
+    enabled: frozenset[str] = frozenset()  # user plugins whose code may run
+    _importers: list[_SafeImporter] | None = None
+    _connectors: list[Connector] | None = None
     _enrichers: list[tuple[EnricherEntry, Enricher]] | None = None
 
     @property
@@ -154,14 +193,17 @@ class PluginRegistry:
         p = self.get(plugin)
         if p is None:
             raise LookupError(f"plugin '{plugin}' is not available")
+        if p.origin == "user" and p.name not in self.enabled:  # never without the user's word
+            raise LookupError(f"plugin '{plugin}' is not enabled")
         return importlib.import_module(f"{p.package}.{module}")
 
-    def importers(self) -> list[Importer]:
-        """Instances of all importers of available plugins, in detection order."""
+    def importers(self) -> list[FileImporter]:
+        """Instances of all file importer classes of available plugins, in detection
+        order (without the CSV formats: see ``file_importers``)."""
         if self._importers is None:
             self._importers = []
             for p in self.available:
-                for entry in p.manifest.importers:
+                for entry in p.spec.importers:
                     try:
                         cls = getattr(self.module(p.name, entry.module), entry.class_)
                         self._importers.append(_SafeImporter(cls(), self, p))
@@ -170,7 +212,38 @@ class PluginRegistry:
             # a plugin that failed half-way contributes nothing
             failed = {p.name for p in self.plugins if p.status == "error"}
             self._importers = [i for i in self._importers if i.plugin.name not in failed]
-        return list(self._importers)
+        found: list[FileImporter] = list(self._importers)
+        return found
+
+    def file_importers(self, own_accounts: list[OwnAccount] | None = None) -> list[FileImporter]:
+        """Everything that reads a file: the importer classes, then the CSV engine for each
+        CSV format (``own_accounts``: what its transfers are recognised by)."""
+        found = self.importers()
+        if formats := self.formats():
+            from hiro_budget.importers.csv_import import CsvImporter
+
+            found += [CsvImporter(f, own_accounts or []) for f in formats]
+        return found
+
+    def connectors(self) -> list[Connector]:
+        """Instances of all connectors of available plugins (the first of a name wins)."""
+        if self._connectors is None:
+            self._connectors = []
+            seen: set[str] = set()
+            for p in self.available:
+                for entry in p.spec.connectors:
+                    try:
+                        connector = getattr(self.module(p.name, entry.module), entry.class_)()
+                    except Exception as e:
+                        self.fail(p, f"connector {entry.module}:{entry.class_}: {e!r}")
+                        continue
+                    if connector.name not in seen:
+                        seen.add(connector.name)
+                        self._connectors.append(connector)
+        return list(self._connectors)
+
+    def connector(self, name: str) -> Connector | None:
+        return next((c for c in self.connectors() if c.name == name), None)
 
     def enricher_for(
         self, *, bank_code: str | None = None, institution: str | None = None
@@ -179,10 +252,10 @@ class PluginRegistry:
         if self._enrichers is None:
             self._enrichers = []
             for p in self.available:
-                for entry in p.manifest.enrichers:
-                    module, func = entry.function.split(":")
+                for entry in p.spec.enrichers:
+                    module, name = entry.function.split(":")
                     try:
-                        self._enrichers.append((entry, getattr(self.module(p.name, module), func)))
+                        self._enrichers.append((entry, getattr(self.module(p.name, module), name)))
                     except Exception as e:
                         self.fail(p, f"enricher {entry.function}: {e!r}")
         for entry, func in self._enrichers:
@@ -200,7 +273,7 @@ class PluginRegistry:
         """CSV formats of available plugins, in detection order."""
         result: list[tuple[Plugin, CsvFormat]] = []
         for p in self.available:
-            for name in p.manifest.formats:
+            for name in p.spec.formats:
                 try:
                     result.append((p, CsvFormat.model_validate(load_yaml(p.path / name))))
                 except Exception as e:
@@ -260,7 +333,7 @@ def _resolve_requirements(plugins: list[Plugin]) -> None:
             p.status, p.problem = "error", f"circular requirement: {' -> '.join((*chain, name))}"
             state[name] = False
             return False
-        for req in p.manifest.requires:
+        for req in p.spec.requires:
             if not usable(req, (*chain, name)):
                 if p.status == "available":
                     p.status, p.problem = "error", f"requires '{req}', which is not available"
@@ -292,7 +365,7 @@ def builtin_dir() -> Path:
 
 def discover(
     user_dir: Path | None,
-    enabled: list[str] | set[str] = (),
+    enabled: Collection[str] = (),
     *,
     builtin: Path | None = None,
     builtin_package: str = BUILTIN_PACKAGE,
@@ -302,7 +375,7 @@ def discover(
     users = [_read(d, "user", USER_PACKAGE) for d in _folders(user_dir)]
     builtins = [_read(d, "builtin", builtin_package) for d in _folders(builtin or builtin_dir())]
     for p in users:
-        if p.status == "available" and p.manifest.has_code and p.name not in set(enabled):
+        if p.status == "available" and p.has_code and p.name not in set(enabled):
             p.status, p.problem = "disabled", "contains code: enable it in the settings"
     replacing = {p.name for p in users if p.status == "available"}
     for p in builtins:
@@ -312,7 +385,7 @@ def discover(
     _resolve_requirements(plugins)
     if user_dir is not None:
         _user_package(user_dir)
-    registry = PluginRegistry(plugins)
+    registry = PluginRegistry(plugins, frozenset(enabled))
     for name, problem in registry.problems():
         log.warning("plugin %s: %s", name, problem)
     return registry
@@ -324,7 +397,7 @@ _current: PluginRegistry | None = None
 _current_key: tuple | None = None
 
 
-def registry(user_dir: Path | None = None, enabled: list[str] | set[str] = ()) -> PluginRegistry:
+def registry(user_dir: Path | None = None, enabled: Collection[str] = ()) -> PluginRegistry:
     """The registry for this user plugin folder and enabled list (built once, then reused;
     plugins are read again after ``reset`` or with other settings)."""
     global _current, _current_key
@@ -332,6 +405,14 @@ def registry(user_dir: Path | None = None, enabled: list[str] | set[str] = ()) -
     if _current is None or key != _current_key:
         _current, _current_key = discover(user_dir, enabled), key
     return _current
+
+
+def of(settings: Settings | None) -> PluginRegistry:
+    """The registry for the app's settings (user plugins and which may run); without
+    settings the built-in plugins only."""
+    if settings is None:
+        return registry(None)
+    return registry(settings.plugins_dir, settings.app.plugins.enabled)
 
 
 def current() -> PluginRegistry:
@@ -390,7 +471,7 @@ def migrate_csv_formats(config_dir: Path) -> list[str]:
         lines = [
             f"name: {name}",
             "version: 1.0.0",
-            "api: 1",
+            "api: 2",
             f"description: CSV format {fmt.name} (from {CSV_FORMATS_FILE})",
             *(
                 [f"requires: [{_ENRICHER_PLUGINS[fmt.enrich]}]"]

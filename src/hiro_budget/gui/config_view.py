@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import html
 import re
 import unicodedata
 from dataclasses import dataclass, fields
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
+from PySide6.QtGui import QFontMetrics, QPalette
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -23,7 +25,6 @@ from PySide6.QtWidgets import (
     QSpinBox,
     QSplitter,
     QStyledItemDelegate,
-    QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
@@ -38,15 +39,19 @@ from hiro_budget.config import (
     RuleDef,
     RuleMatch,
 )
+from hiro_budget.gui import regex_help, shortcuts
 from hiro_budget.gui.common import show_error
 from hiro_budget.gui.navigation import ICON_DELETE, ICON_DOWN, ICON_UP
 from hiro_budget.gui.widgets import (
     DetailCard,
+    Drop,
+    DropTree,
     action_bar,
     banner,
     icon_button,
     page_title,
     primary,
+    revert_by_key,
 )
 from hiro_budget.services import config_edit
 from hiro_budget.services.categorization.pipeline import recategorize_all
@@ -75,28 +80,14 @@ def unique(base: str, taken: set[str]) -> str:
 
 # --- categories ----------------------------------------------------------------------
 
-Drop = QAbstractItemView.DropIndicatorPosition
 
-
-class CategoryTree(QTreeWidget):
+class CategoryTree(DropTree):
     """Drag and drop: groups between groups, categories into any group."""
-
-    #: (dragged item, item under the cursor, drop indicator position)
-    dropped = Signal(QTreeWidgetItem, QTreeWidgetItem, Drop)
 
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self.setDragDropMode(QAbstractItemView.DragDropMode.InternalMove)
         self.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-
-    def dropEvent(self, event) -> None:
-        item = self.currentItem()
-        target = self.itemAt(event.position().toPoint())
-        if item is not None and target is not None and target is not item:
-            self.dropped.emit(item, target, self.dropIndicatorPosition())
-        # The editor moved the item; Qt must not remove the dragged row as well.
-        event.setDropAction(Qt.DropAction.IgnoreAction)
-        event.accept()
 
 
 SHIFT_COLUMN = 4  # report_shift_days of a category ("" for 0)
@@ -122,6 +113,29 @@ class ShiftDelegate(QStyledItemDelegate):
         model.setData(index, str(editor.value()) if editor.value() else "")
 
 
+def icon_buttons(editor, up: str, down: str, remove: str) -> list:
+    """Up, down and remove below a list of the editors, their keys in the tooltips."""
+    return [
+        icon_button(ICON_UP, "↑", shortcuts.tip(up, "item_move", 0), lambda: editor._move(-1)),
+        icon_button(ICON_DOWN, "↓", shortcuts.tip(down, "item_move", 1), lambda: editor._move(1)),
+        icon_button(ICON_DELETE, "✕", shortcuts.tip(remove, "item_remove"), editor._remove),
+    ]
+
+
+def bind_list_keys(editor, view) -> None:
+    """Del, Alt+Up / Down on the list (#68), the revert key on the whole editor."""
+    on_list = Qt.ShortcutContext.WidgetShortcut
+    shortcuts.bind("item_remove", view, editor._remove, on_list)
+    for index, delta in ((0, -1), (1, 1)):
+        shortcuts.bind("item_move", view, lambda d=delta: editor._move(d), on_list, index=index)
+    shortcuts.bind(
+        "revert",
+        editor,
+        lambda: revert_by_key(editor, editor.revert_button),
+        Qt.ShortcutContext.WidgetWithChildrenShortcut,
+    )
+
+
 class CategoryEditor(QWidget):
     saved = Signal()
     #: unsaved changes appeared (True) or were saved / discarded (False)
@@ -135,9 +149,11 @@ class CategoryEditor(QWidget):
             [
                 self.tr("Name"),
                 self.tr("Key"),
-                self.tr("Income"),
-                self.tr("One-off"),
-                self.tr("Report month"),
+                # two lines where a language needs them: the columns hold only a check
+                # box or a number, the names need the room (#38)
+                self.tr("Income", "column header, may have two lines"),
+                self.tr("One-off", "column header, may have two lines"),
+                self.tr("Report\nmonth", "column header, may have two lines"),
             ]
         )
         self.tree.headerItem().setToolTip(
@@ -158,24 +174,29 @@ class CategoryEditor(QWidget):
         )
         header = self.tree.header()
         header.setStretchLastSection(False)
-        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        for column in (1, 2, 3, SHIFT_COLUMN):  # key, check boxes, number: as wide as needed
+        # the names as wide as the longest (set in _fit_name_column), the keys get the
+        # rest; check boxes and the number as wide as their header
+        header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
+        for column in (2, 3, SHIFT_COLUMN):
             header.setSectionResizeMode(column, QHeaderView.ResizeMode.ResizeToContents)
         self.tree.itemChanged.connect(self._item_changed)
         self.tree.dropped.connect(self.move_item)
 
         add_group = QPushButton(self.tr("Add group"))
+        add_group.setToolTip(shortcuts.tip(self.tr("Add group"), "group_new"))
         add_group.clicked.connect(self._add_group)
         add_category = QPushButton(self.tr("Add category"))
+        add_category.setToolTip(shortcuts.tip(self.tr("Add category"), "item_new"))
         add_category.clicked.connect(self._add_category)
         list_bar = action_bar(
             [add_group, add_category],
-            [
-                icon_button(ICON_UP, "↑", self.tr("Up"), lambda: self._move(-1)),
-                icon_button(ICON_DOWN, "↓", self.tr("Down"), lambda: self._move(1)),
-                icon_button(ICON_DELETE, "✕", self.tr("Remove"), self._remove),
-            ],
+            icon_buttons(self, self.tr("Up"), self.tr("Down"), self.tr("Remove")),
         )
+        page = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        shortcuts.bind("item_new", self, self._add_category, page)
+        shortcuts.bind("group_new", self, self._add_group, page)
+        bind_list_keys(self, self.tree)
         self.save_button = QPushButton(self.tr("Save categories"))
         self.save_button.setDefault(True)  # main action: accent colour
         self.save_button.clicked.connect(self.save)
@@ -193,7 +214,25 @@ class CategoryEditor(QWidget):
         layout.addLayout(save_row)
         self.load()
 
+    def _fit_name_column(self) -> None:
+        """The name column as wide as its longest name (measured with QFontMetrics: the
+        tree's sizeHintForColumn is slow through the stylesheet)."""
+        tree = self.tree
+        indent = tree.indentation()
+        widest = QFontMetrics(tree.header().font()).horizontalAdvance(tree.headerItem().text(0))
+        for i in range(tree.topLevelItemCount()):
+            group = tree.topLevelItem(i)
+            items = [(group, 1)] + [(group.child(j), 2) for j in range(group.childCount())]
+            for item, depth in items:
+                text = QFontMetrics(item.font(0)).horizontalAdvance(item.text(0))
+                widest = max(widest, depth * indent + text)
+                if item.toolTip(1) != item.text(1):  # the key column may be cut
+                    with QSignalBlocker(tree):
+                        item.setToolTip(1, item.text(1))
+        tree.setColumnWidth(0, widest + 24)  # cell padding of the theme
+
     def _set_dirty(self, dirty: bool) -> None:
+        self._fit_name_column()
         self.save_button.setEnabled(dirty)
         self.revert_button.setEnabled(dirty)
         self.dirty_changed.emit(dirty)
@@ -498,24 +537,37 @@ class RuleEditor(QWidget):
     saved = Signal()
     #: unsaved changes appeared (True) or were saved / discarded (False)
     dirty_changed = Signal(bool)
+    #: show these bookings (ids) on the bookings page, labelled
+    show_bookings = Signal(list, str)
 
     def __init__(self, app: App, parent=None) -> None:
         super().__init__(parent)
         self.app = app
         self.drafts: list[RuleDraft] = []
         self._loading = False
+        # what the rules look at in each booking, loaded when the page is shown; the hits
+        # of every rule are counted again from it after each change (#49)
+        self._samples: list[config_edit.RuleSample] | None = None
+        self.hits: list[config_edit.RuleHits] = []
+        self._hits_stale = True  # a rule changed since the hits were counted
 
+        self.search = QLineEdit(placeholderText=self.tr("Search rules (id, category, pattern)…"))
+        self.search.setClearButtonEnabled(True)
+        self.search.textChanged.connect(self._apply_search)
         self.list = QListWidget()
         self.list.currentRowChanged.connect(self._show_draft)
         new_rule = QPushButton(self.tr("New rule"))
-        new_rule.clicked.connect(self._add)
+        new_rule.setToolTip(shortcuts.tip(self.tr("New rule"), "item_new"))
+        new_rule.clicked.connect(lambda: self._add())
         list_buttons = action_bar(
-            [new_rule],
-            [
-                icon_button(ICON_UP, "↑", self.tr("Up"), lambda: self._move(-1)),
-                icon_button(ICON_DOWN, "↓", self.tr("Down"), lambda: self._move(1)),
-                icon_button(ICON_DELETE, "✕", self.tr("Remove"), self._remove),
-            ],
+            [new_rule], icon_buttons(self, self.tr("Up"), self.tr("Down"), self.tr("Remove"))
+        )
+        shortcuts.bind(
+            "item_new", self, lambda: self._add(), Qt.ShortcutContext.WidgetWithChildrenShortcut
+        )
+        bind_list_keys(self, self.list)
+        shortcuts.bind(
+            "item_edit", self.list, self._edit_pattern, Qt.ShortcutContext.WidgetShortcut
         )
 
         self.inputs: dict[str, QLineEdit] = {}
@@ -547,12 +599,15 @@ class RuleEditor(QWidget):
         for name, label in labels.items():
             edit = QLineEdit(placeholderText=placeholders[name])
             self.inputs[name] = edit
+            if name not in ("amount_min", "amount_max"):
+                regex_help.attach(edit)
             form.addRow(label, edit)
         for edit in self.inputs.values():
             edit.textEdited.connect(self._form_changed)
         self.category.currentIndexChanged.connect(self._form_changed)
 
         self.match_info = banner(QLabel(), "info")  # kind set by the match result
+        self.match_info.linkActivated.connect(lambda _link: self._show_matches())
         self._match_timer = QTimer(self, singleShot=True, interval=300)
         self._match_timer.timeout.connect(self._update_match_info)
 
@@ -576,6 +631,7 @@ class RuleEditor(QWidget):
 
         left = QVBoxLayout()
         left.addWidget(order)
+        left.addWidget(self.search)
         left.addWidget(self.list, 1)
         left.addLayout(list_buttons)
         layout = QHBoxLayout(self)
@@ -605,12 +661,33 @@ class RuleEditor(QWidget):
         self._rebuild_list(0)
         self._set_dirty(False)
 
+    def bookings_changed(self) -> None:
+        """Bookings were edited, imported or recategorized: the hits are counted again,
+        now if the page is visible, else when it is shown. (They were thrown away on every
+        hide: 0.64 s on every visit with ten years of bookings, #57.)"""
+        self._samples = None
+        if self.isVisible():
+            self._recount()
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self._recount()
+
+    def _recount(self) -> None:
+        """The hits again, if the bookings were loaded anew."""
+        if self._samples is None:
+            self._hits_stale = True
+            self._update_hits()
+            self._update_match_info()
+
     def _rebuild_list(self, select: int) -> None:
         self.list.blockSignals(True)
         self.list.clear()
         for d in self.drafts:
             self.list.addItem(QListWidgetItem(self._item_text(d)))
         self.list.blockSignals(False)
+        self._update_hits()
+        self._apply_search()
         if self.drafts:
             self.list.setCurrentRow(max(0, min(select, len(self.drafts) - 1)))
         else:
@@ -618,6 +695,58 @@ class RuleEditor(QWidget):
 
     def _item_text(self, d: RuleDraft) -> str:
         return f"{d.id or '?'}  →  {self._category_name(d.category)}"
+
+    @staticmethod
+    def _preview_rule(d: RuleDraft) -> RuleDef:
+        """The draft as a rule, also while its id or category is still empty."""
+        rule = RuleDraft(**{f.name: getattr(d, f.name) for f in fields(d)})
+        rule.id = rule.id or "preview"
+        rule.category = rule.category or "preview.preview"
+        return rule.to_rule()
+
+    def _update_hits(self) -> None:
+        """Count the hits of every rule (in the list's order) and show them in the list:
+        the bookings each rule categorizes; grey when none (obsolete, or every match is
+        taken by a rule above it)."""
+        if self._samples is None:
+            with self.app.session() as s:
+                self._samples = config_edit.rule_samples(s)
+        rules = []
+        for d in self.drafts:
+            try:
+                rules.append(self._preview_rule(d))
+            except Exception:  # an invalid pattern: shown in the form
+                rules.append(None)
+        self.hits = config_edit.rule_hits(self._samples, rules)
+        self._hits_stale = False
+        grey = self.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
+        for row, (d, h) in enumerate(zip(self.drafts, self.hits, strict=True)):
+            item = self.list.item(row)
+            if item is None:
+                continue
+            item.setText(f"{self._item_text(d)}   ·   {h.effective}")
+            item.setData(Qt.ItemDataRole.ForegroundRole, grey if not h.effective else None)
+            tip = self.tr("Categorizes %1 bookings.").replace("%1", str(h.effective))
+            if h.taken:
+                tip += " " + (
+                    self.tr("Matches %1; %2 of them are taken by rules above it.")
+                    .replace("%1", str(h.matching))
+                    .replace("%2", str(h.taken))
+                )
+            item.setToolTip(tip)
+
+    def _apply_search(self) -> None:
+        """Hide the rules that do not contain the search text (id, category, patterns)."""
+        needle = self.search.text().strip().casefold()
+        for row, d in enumerate(self.drafts):
+            item = self.list.item(row)
+            if item is None:
+                continue
+            haystack = " ".join(
+                [d.id, d.category, self._category_name(d.category)]
+                + [getattr(d, f) for f in RuleDraft.TEXT_FIELDS]
+            ).casefold()
+            item.setHidden(bool(needle) and needle not in haystack)
 
     def _set_dirty(self, dirty: bool) -> None:
         self.save_button.setEnabled(dirty)
@@ -651,7 +780,8 @@ class RuleEditor(QWidget):
         for name, edit in self.inputs.items():
             setattr(d, name, edit.text())
         d.category = self.category.currentData() or ""
-        self.list.currentItem().setText(self._item_text(d))
+        self.list.currentItem().setText(self._item_text(d))  # the count follows the timer
+        self._hits_stale = True
         self.form_box.set_heading(d.id)
         self._set_dirty(True)
         self._match_timer.start()
@@ -664,21 +794,44 @@ class RuleEditor(QWidget):
             return
         self.match_info.show()
         try:
-            rule = RuleDraft(**{f.name: getattr(d, f.name) for f in fields(d)})
-            rule.id = rule.id or "preview"
-            rule.category = rule.category or "preview.preview"
-            with self.app.session() as s:
-                total, uncategorized = config_edit.rule_match_count(s, rule.to_rule())
-            self.match_info.setText(
-                "✓ "
-                + self.tr("Matches %1 bookings (%2 currently uncategorized).")
-                .replace("%1", str(total))
-                .replace("%2", str(uncategorized))
-            )
-            banner(self.match_info, "success" if total else "info")
+            self._preview_rule(d)  # an invalid rule: say why
         except Exception as e:
-            self.match_info.setText(self.tr("Invalid rule: %1").replace("%1", str(e)))
+            self.match_info.setText(html.escape(self.tr("Invalid rule: %1").replace("%1", str(e))))
             banner(self.match_info, "error")
+            if self._hits_stale:
+                self._update_hits()
+            return
+        if self._hits_stale:
+            self._update_hits()
+        h = self._current_hits()
+        if h is None:
+            self.match_info.hide()
+            return
+        text = "✓ " + (
+            self.tr("Matches %1 bookings (%2 currently uncategorized).")
+            .replace("%1", str(h.matching))
+            .replace("%2", str(h.uncategorized))
+        )
+        if h.taken:
+            text += " " + self.tr("%1 of them are taken by rules above it.").replace(
+                "%1", str(h.taken)
+            )
+        if h.matching:
+            text += " <a href='#'>" + self.tr("Show bookings") + "</a>"
+        self.match_info.setText(text)
+        banner(self.match_info, "success" if h.effective else "info")
+
+    def _current_hits(self) -> config_edit.RuleHits | None:
+        row = self.list.currentRow()
+        return self.hits[row] if 0 <= row < len(self.hits) else None
+
+    def _show_matches(self) -> None:
+        """The bookings the current rule matches, on the bookings page."""
+        d, h = self._current(), self._current_hits()
+        if d is None or h is None or not h.matching:
+            return
+        label = self.tr("bookings matching the rule “%1”").replace("%1", d.id)
+        self.show_bookings.emit(list(h.ids), label)
 
     def _add(self, draft: RuleDraft | None = None) -> None:
         draft = draft or RuleDraft()
@@ -698,6 +851,13 @@ class RuleEditor(QWidget):
         self.drafts[row], self.drafts[new] = self.drafts[new], self.drafts[row]
         self._rebuild_list(new)
         self._set_dirty(True)
+
+    def _edit_pattern(self) -> None:
+        """F2: the first pattern of the rule (the counterparty one if it has none)."""
+        names = ("counterparty", "merchant", "purpose", "booking_type", "details", "account")
+        name = next((n for n in names if self.inputs[n].text()), "counterparty")
+        self.inputs[name].setFocus()
+        self.inputs[name].selectAll()
 
     def _remove(self) -> None:
         row = self.list.currentRow()
@@ -755,6 +915,7 @@ class ConfigView(QWidget):
         self.categories.saved.connect(self.rules.load)
         self.categories.saved.connect(self.changed)
         self.rules.saved.connect(self.changed)
+        self.show_bookings = self.rules.show_bookings  # (ids, label) for the bookings page
 
         cat_box = QGroupBox(self.tr("Categories"))
         QVBoxLayout(cat_box).addWidget(self.categories)
@@ -770,6 +931,26 @@ class ConfigView(QWidget):
         layout.addWidget(page_title(self.tr("Categories & rules")))
         layout.addWidget(splitter, 1)
         self.setFocusProxy(self.categories.tree)  # keyboard focus when shown
+        # Ctrl+PgDn / PgUp: to the other list (#67)
+        for index in (0, 1):
+            shortcuts.bind(
+                "config_pane",
+                self,
+                self.other_pane,
+                Qt.ShortcutContext.WidgetWithChildrenShortcut,
+                index=index,
+            )
+
+    def focus_regions(self) -> list[QWidget]:
+        """F6: categories, rules, the selected rule."""
+        return [self.categories.tree, self.rules.list, self.rules.inputs["id"]]
+
+    def other_pane(self) -> None:
+        """Focus from the categories to the rules and back."""
+        if self.rules.isAncestorOf(self.focusWidget() or self):
+            self.categories.tree.setFocus()
+        else:
+            self.rules.list.setFocus()
 
     def has_unsaved_changes(self) -> bool:
         return self.categories.save_button.isEnabled() or self.rules.save_button.isEnabled()

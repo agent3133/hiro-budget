@@ -4,6 +4,7 @@ costs due soon). The key figures lead to their pages with a click."""
 
 from __future__ import annotations
 
+import html
 from datetime import date
 
 from PySide6.QtCore import QLocale, Qt, Signal
@@ -51,11 +52,14 @@ class OverviewView(QWidget):
     show_uncategorized = Signal()
     show_review = Signal()
     show_net_worth = Signal()
+    show_account = Signal(int)  # the bookings of an account (id)
 
     def __init__(self, app: App, parent=None) -> None:
         super().__init__(parent)
         self.app = app
         self.data: Overview | None = None
+        self.stale = True  # computed when shown (showEvent)
+        self._day = date.today()
 
         self.title = page_title(self.tr("Overview"))
         self.today = QLabel()
@@ -157,10 +161,19 @@ class OverviewView(QWidget):
         with self.app.session() as s:
             self.data = overview.overview(s, self.app.settings)
         self._fill(self.data)
+        self.stale = False
+        self._day = date.today()
 
     def showEvent(self, event) -> None:
         super().showEvent(event)
-        self.refresh()  # always current when shown (imports, budget changes)
+        # Current when shown: computed again only after bookings, budget or configuration
+        # changed (MainWindow sets ``stale``) or on a new day (#61: on every visit before).
+        if self.stale or self._day != date.today():
+            self.refresh()
+
+    def focus_regions(self) -> list[QWidget]:
+        """F6: the key figures (Tab between them, Space / Return opens), the chart."""
+        return [self.cards["assign"], self.chart]
 
     def _uncategorized_clicked(self) -> None:
         if self.data and not self.data.uncategorized and self.data.to_review:
@@ -236,14 +249,31 @@ class OverviewView(QWidget):
         )
 
         self.upcoming.clear()
-        for r in o.upcoming:
+        # payments whose day has passed without a booking: a group of their own on top
+        # (a statement may be missing), then the ones still to come (#31)
+        overdue = [r for r in o.upcoming if r.next_due < today]
+        coming = [r for r in o.upcoming if r.next_due >= today]
+        if overdue:
+            self._upcoming_group(
+                self.tr("Overdue – not booked yet (%1)").replace("%1", str(len(overdue))),
+                warning_color(),
+            )
+        for r in overdue + coming:
+            if overdue and r is (coming[0] if coming else None):
+                self._upcoming_group(self.tr("Due in the next 30 days"))
             item = QTreeWidgetItem(
                 [fmt_date(r.next_due), r.payee, money(-r.amount_cents), r.category or ""]
             )
             item.setTextAlignment(2, RIGHT)
             item.setForeground(2, amount_color(-r.amount_cents))
             if r.next_due < today:
-                item.setToolTip(0, self.tr("Expected already, not booked yet"))
+                item.setToolTip(
+                    0,
+                    self.tr(
+                        "Expected on %1, not booked yet: paid late, ended, or a statement is "
+                        "missing"
+                    ).replace("%1", fmt_date(r.next_due)),
+                )
                 item.setForeground(0, warning_color())
             self.upcoming.addTopLevelItem(item)
         self.upcoming.setVisible(bool(o.upcoming))
@@ -266,6 +296,21 @@ class OverviewView(QWidget):
                     "warning",
                 )
             )
+        for a in o.stale:
+            label = QLabel(
+                self.tr("%1: no booking since %2 (%3 days). <a href='#'>Show bookings</a>")
+                .replace("%1", html.escape(a.name))
+                .replace("%2", fmt_date(a.last))
+                .replace("%3", str(a.days))
+            )
+            label.setToolTip(
+                self.tr(
+                    "A statement may be missing, or the cash was not counted. Turn the "
+                    "reminder off for an account under Accounts."
+                )
+            )
+            label.linkActivated.connect(lambda _l, i=a.account_id: self.show_account.emit(i))
+            self.notes.addWidget(banner(label, "warning"))
         if o.to_review:
             self.notes.addWidget(
                 banner(
@@ -275,10 +320,21 @@ class OverviewView(QWidget):
                     "info",
                 )
             )
-        if not o.gaps and not o.to_review:
+        if not o.gaps and not o.to_review and not o.stale:
             self.notes.addWidget(
                 banner(QLabel(self.tr("All statements connect; nothing to check.")), "success")
             )
+
+    def _upcoming_group(self, title: str, color=None) -> None:
+        """A heading row in the list of due payments."""
+        item = QTreeWidgetItem([title])
+        font = item.font(0)
+        font.setBold(True)
+        item.setFont(0, font)
+        if color is not None:
+            item.setForeground(0, color)
+        self.upcoming.addTopLevelItem(item)
+        item.setFirstColumnSpanned(True)
 
     def _fill_chart(self, o: Overview) -> None:
         chart = new_chart(self.tr("Net worth"))

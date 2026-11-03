@@ -37,18 +37,24 @@ def check_key_renames(session: Session, groups: dict[str, str], categories: dict
 def rename_keys(session: Session, groups: dict[str, str], categories: dict[str, str]) -> None:
     """Rename groups and categories in place, so bookings and budgets stay with them."""
     check_key_renames(session, groups, categories)
-    for model, renames in ((CategoryGroup, groups), (Category, categories)):
-        rows = [
-            (row, renames[row.key])
-            for row in session.scalars(select(model).where(model.key.in_(list(renames))))
-        ]
-        # Two steps, so that keys can be swapped without hitting the unique constraint.
-        for row, _ in rows:
-            row.key = f"~renaming~{row.id}"
-        session.flush()
-        for row, new in rows:
-            row.key = new
-        session.flush()
+    _rename(session, CategoryGroup, groups)
+    _rename(session, Category, categories)
+
+
+def _rename[M: (CategoryGroup, Category)](
+    session: Session, model: type[M], renames: dict[str, str]
+) -> None:
+    rows = [
+        (row, renames[row.key])
+        for row in session.scalars(select(model).where(model.key.in_(list(renames))))
+    ]
+    # Two steps, so that keys can be swapped without hitting the unique constraint.
+    for row, _ in rows:
+        row.key = f"~renaming~{row.id}"
+    session.flush()
+    for row, new in rows:
+        row.key = new
+    session.flush()
 
 
 def sync_categories(session: Session, cfg: CategoriesConfig) -> None:
@@ -124,7 +130,7 @@ def convert_group_assignments(session: Session, group: CategoryGroup) -> None:
 def first_category(group: CategoryGroup) -> Category | None:
     """Category that takes a group's money when it is budgeted per category again."""
     visible = [c for c in group.categories if not c.hidden]
-    return (visible or list(group.categories) or [None])[0]
+    return visible[0] if visible else next(iter(group.categories), None)
 
 
 def _add(

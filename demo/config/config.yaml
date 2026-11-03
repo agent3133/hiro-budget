@@ -68,6 +68,7 @@ mortgage:
     loan_account: ING Baufinanzierung
     interest_category: wohnen.baufinanzierung
     principal_category: wohnen.baufinanzierung
+    fixed_until: 2031-12-31
     match:
       purpose: "(?i)ZINSEN.*TILGUNG"
 

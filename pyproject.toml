@@ -1,6 +1,6 @@
 [project]
 name = "hiro-budget"
-version = "0.1.0"
+version = "0.2.0"
 description = "Hiro Budget: a local family budget (YNAB-style): import bank statements, categorize, report"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -28,6 +28,15 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/hiro_budget"]
 
+# the user guide (Help > User guide) ships with the package
+[tool.hatch.build.targets.wheel.force-include]
+"docs/workflows.de.md" = "hiro_budget/guide/workflows.de.md"
+"docs/workflows.en.md" = "hiro_budget/guide/workflows.en.md"
+"docs/csv-import.de.md" = "hiro_budget/guide/csv-import.de.md"
+"docs/csv-import.en.md" = "hiro_budget/guide/csv-import.en.md"
+"docs/csv-formats.llm.md" = "hiro_budget/guide/csv-formats.llm.md"
+"docs/images/workflows" = "hiro_budget/guide/images/workflows"  # its screenshots
+
 [dependency-groups]
 build = [
     "nuitka>=4.3.1",
@@ -37,6 +46,7 @@ demo = [
 ]
 dev = [
     "fpdf2>=2.8.9",
+    "mypy>=2.4.1",
     "pytest>=9.1.1",
     "pytest-qt>=4.5.0",
     "ruff>=0.17.1",
@@ -57,3 +67,12 @@ extend-exclude = ["src/hiro_budget/db/migrations/versions"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP"]
+
+[tool.mypy]
+# Type checking of the layers without Qt (#80); the GUI is not checked (Qt's Optional returns).
+files = ["src/hiro_budget/services", "src/hiro_budget/importers", "src/hiro_budget/db", "src/hiro_budget/config.py", "src/hiro_budget/plugins", "src/hiro_budget/plugin_api.py"]
+plugins = ["pydantic.mypy"]
+python_version = "3.12"
+ignore_missing_imports = true
+follow_imports = "silent"
+warn_unused_ignores = true

@@ -20,7 +20,6 @@ from sqlalchemy.orm import Session
 from hiro_budget.config import Settings
 from hiro_budget.db.models import Category
 from hiro_budget.services import budget
-from hiro_budget.services.reports import months_between
 
 
 @dataclass
@@ -106,8 +105,10 @@ def budget_vs_actual(
             one_off_spent[month] -= cents
         if cat_id not in left_out:
             spent[(envelope_of[cat_id], month)] -= cents
-    for month in months_between(first_month, last_month):
-        b = budget.compute_month(session, settings, month, data, balances=False)
+    for b in budget.compute_months(  # one pass over all months (#59)
+        session, settings, first_month, last_month, data, balances=False
+    ):
+        month = b.month
         envelopes = [e for e in b.envelopes if e.is_group or e.category_id not in left_out]
         if only_budgeted and not any(e.assigned for e in envelopes):
             continue

@@ -1,4 +1,5 @@
-"""Fetching from the bank (FinTS, issues #7 and #8) against a fake bank."""
+"""Fetching from the bank (FinTS, issues #7, #8; as a connector plugin #82) against a fake
+bank."""
 
 from __future__ import annotations
 
@@ -10,17 +11,17 @@ import pytest
 from sqlalchemy import func, select
 
 from hiro_budget.config import (
+    BankAccessConfig,
     BankAccountLink,
     BankLogin,
-    FintsConfig,
     OwnAccount,
     load_settings,
 )
 from hiro_budget.db.models import Account, ImportBatch
-from hiro_budget.importers.base import ParsedTransaction
-from hiro_budget.services import bank, config_edit, import_service
+from hiro_budget.importers.base import ParsedStatement, ParsedTransaction
+from hiro_budget.importers.connectors import Cancelled, LoginError, RemoteAccount
+from hiro_budget.services import config_edit, connections, import_service
 from hiro_budget.services.accounts import account_balances
-from hiro_budget.services.bank import BankAccount, Fetched, fetch
 
 IBAN = "DE12345678901234567890"  # the test statement's account
 TODAY = date(2026, 4, 20)
@@ -42,11 +43,11 @@ class FakeBank:
 
     def __init__(self) -> None:
         self.offered = [
-            BankAccount(IBAN, "Girokonto", "giro", IBAN),
-            BankAccount(
+            RemoteAccount(IBAN, "Girokonto", "giro", IBAN),
+            RemoteAccount(
                 "DE99999999999999999999", "Extra-Konto", "savings", "DE99999999999999999999"
             ),
-            BankAccount("1234567890", "Direkt-Depot", "depot"),
+            RemoteAccount("1234567890", "Direkt-Depot", "depot"),
         ]
         self.bookings: dict[str, list[ParsedTransaction]] = {a.bank_id: [] for a in self.offered}
         self.balances: dict[str, int] = {a.bank_id: 0 for a in self.offered}
@@ -54,24 +55,37 @@ class FakeBank:
         self.asked: list[tuple[str, date | None]] = []
         self.confirmations = 0  # app confirmations the bank waits for at login
 
-    def accounts(self) -> list[BankAccount]:
+    def accounts(self) -> list[RemoteAccount]:
         return self.offered
 
-    def fetch(self, account: BankAccount, start: date | None) -> Fetched:
+    def fetch(self, account: RemoteAccount, start: date | None) -> ParsedStatement:
         self.asked.append((account.bank_id, start))
         booked = [
             t for t in self.bookings[account.bank_id] if start is None or t.booking_date >= start
         ]
-        return Fetched(account, start, self.balances[account.bank_id], TODAY, booked)
+        return ParsedStatement(
+            importer="fints",
+            institution="",
+            account_name=account.product,
+            account_kind=account.kind,
+            account_iban=account.bank_id,
+            period_start=start,
+            period_end=TODAY,
+            closing_balance_cents=self.balances[account.bank_id],
+            transactions=booked,
+            incremental=True,
+        )
 
-    def connect(self, login, pin, product, confirm):
+    def connect(self, settings, login, pin, confirm, options=None):
+        """``connections.connect``"""
+
         @contextmanager
         def session():
             if pin != self.pin:
-                raise bank.PinError("PIN wrong")
+                raise LoginError("PIN wrong")
             for _ in range(self.confirmations):
                 if not confirm.wait_for_app("Bitte bestätigen"):
-                    raise bank.Cancelled("cancelled")
+                    raise Cancelled("cancelled")
             yield self
 
         return session()
@@ -83,7 +97,7 @@ def link(account: str, bank_id: str = IBAN, kind: str = "giro", fetch_from=None)
     )
 
 
-LOGIN = BankLogin(login_id="test")
+LOGIN = BankLogin(name="ING", settings={"login_id": "test"})
 
 
 def fetched(fake: FakeBank, links: list[BankAccountLink], session) -> list:
@@ -93,7 +107,7 @@ def fetched(fake: FakeBank, links: list[BankAccountLink], session) -> list:
             lk,
             fake.fetch(
                 next(a for a in fake.offered if a.bank_id == lk.bank_id),
-                fetch.fetch_start(session, lk),
+                connections.fetch_start(session, lk, "fints"),
             ),
         )
         for lk in links
@@ -114,7 +128,7 @@ def test_fetch_after_statements(app, statement_pdf):
     with app.session() as s:
         import_service.import_file(s, app.settings, statement_pdf)  # March, 3,555.87 EUR
         account = s.scalar(select(Account).where(Account.iban == IBAN))
-        cut = fetch.suggested_fetch_from(s, account.id)
+        cut = connections.suggested_fetch_from(s, account.id, "fints")
     assert cut == date(2026, 4, 1)
     girokonto = link("ING Girokonto", fetch_from=cut)
     fake.bookings[IBAN] = [
@@ -126,7 +140,7 @@ def test_fetch_after_statements(app, statement_pdf):
     fake.balances[IBAN] = 355587 - 5000 - 1818
     with app.session() as s:
         items = fetched(fake, [girokonto], s)
-        result = fetch.import_fetched(s, app.settings, items, now=datetime(2026, 4, 20, 9, 0))
+        result = connections.import_fetched(s, app.settings, items, now=datetime(2026, 4, 20, 9, 0))
     assert fake.asked == [(IBAN, date(2026, 4, 1))]
     assert result.added == 3
     assert result.balance_differences == []
@@ -141,8 +155,8 @@ def test_fetch_after_statements(app, statement_pdf):
 
     # again, with the overlap: the same bookings are recognised, no new history entry
     with app.session() as s:
-        assert fetch.fetch_start(s, girokonto) == date(2026, 4, 10)  # last day - 10
-        result = fetch.import_fetched(
+        assert connections.fetch_start(s, girokonto, "fints") == date(2026, 4, 10)  # last day - 10
+        result = connections.import_fetched(
             s, app.settings, [(LOGIN, girokonto, fake.fetch(fake.offered[0], cut))]
         )
         assert (result.added, result.accounts[0].duplicates) == (0, 3)
@@ -154,13 +168,17 @@ def test_balance_difference_is_reported(app):
     fake.bookings[IBAN] = [tx(date(2026, 4, 2), -5000)]
     fake.balances[IBAN] = 10000
     with app.session() as s:
-        first = fetch.import_fetched(s, app.settings, fetched(fake, [link("ING Girokonto")], s))
+        first = connections.import_fetched(
+            s, app.settings, fetched(fake, [link("ING Girokonto")], s)
+        )
     # no statement before: the account starts with bank balance - fetched bookings
     assert first.balance_differences == []
     fake.bookings[IBAN].append(tx(date(2026, 4, 15), -2000))
     fake.balances[IBAN] = 10000 - 2000 - 100  # a booking of 1 EUR the bank did not list
     with app.session() as s:
-        second = fetch.import_fetched(s, app.settings, fetched(fake, [link("ING Girokonto")], s))
+        second = connections.import_fetched(
+            s, app.settings, fetched(fake, [link("ING Girokonto")], s)
+        )
     assert second.added == 1
     assert [r.balance_difference_cents for r in second.balance_differences] == [-100]
 
@@ -171,7 +189,7 @@ def test_new_account_starts_with_the_bank_balance(app):
     fake.bookings[extra.bank_id] = [tx(date(2025, 12, 1), 50000, "Zins", "Zinsen")]
     fake.balances[extra.bank_id] = 1_250_000
     with app.session() as s:
-        result = fetch.import_fetched(s, app.settings, fetched(fake, [extra], s))
+        result = connections.import_fetched(s, app.settings, fetched(fake, [extra], s))
     assert fake.asked == [(extra.bank_id, None)]  # as far back as the bank allows
     assert result.added == 1
     with app.session() as s:
@@ -183,7 +201,7 @@ def test_new_account_starts_with_the_bank_balance(app):
         )
         assert balance(s, "ING Extra-Konto 2") == 1_250_000
         # PDF statements of this account are cut over at the first fetched day
-        assert fetch.cutovers(s, settings_with([extra], app)) == {
+        assert connections.cutovers(s, settings_with([extra], app)) == {
             account.id: (date(2025, 12, 1), TODAY)
         }
 
@@ -193,11 +211,11 @@ def test_new_account_without_bookings_gets_its_balance(app):
     extra = link("ING Extra-Konto 3", "DE99999999999999999999", "savings")
     fake.balances[extra.bank_id] = 777
     with app.session() as s:
-        result = fetch.import_fetched(s, app.settings, fetched(fake, [extra], s))
+        result = connections.import_fetched(s, app.settings, fetched(fake, [extra], s))
         assert result.added == 0
         assert balance(s, "ING Extra-Konto 3") == 777
         # nothing new later: no further entries in the history
-        fetch.import_fetched(s, app.settings, fetched(fake, [extra], s))
+        connections.import_fetched(s, app.settings, fetched(fake, [extra], s))
         assert s.scalar(select(func.count()).select_from(ImportBatch)) == 1
 
 
@@ -207,10 +225,10 @@ def test_undo_a_fetch_fetches_again(app):
     fake.balances[IBAN] = -5000
     giro = link("ING Girokonto", fetch_from=date(2026, 4, 1))
     with app.session() as s:
-        result = fetch.import_fetched(s, app.settings, fetched(fake, [giro], s))
+        result = connections.import_fetched(s, app.settings, fetched(fake, [giro], s))
         import_service.delete_batch(s, app.settings, result.batch_ids[0], retrain=False)
-        assert fetch.fetch_start(s, giro) == date(2026, 4, 1)
-        again = fetch.import_fetched(s, app.settings, fetched(fake, [giro], s))
+        assert connections.fetch_start(s, giro, "fints") == date(2026, 4, 1)
+        again = connections.import_fetched(s, app.settings, fetched(fake, [giro], s))
     assert again.added == 1
 
 
@@ -220,12 +238,16 @@ def test_fetched_bookings_are_categorized(app):
         tx(date(2026, 4, 2), -5000, "Hausverwaltung Muster", "Hausgeld Musterstrasse 1")
     ]
     with app.session() as s:
-        result = fetch.import_fetched(s, app.settings, fetched(fake, [link("ING Girokonto")], s))
+        result = connections.import_fetched(
+            s, app.settings, fetched(fake, [link("ING Girokonto")], s)
+        )
     assert sum(result.categorization.counts.values()) == 1
 
 
 def settings_with(links: list[BankAccountLink], app):
-    app.settings.app.fints = FintsConfig(logins=[LOGIN.model_copy(update={"accounts": links})])
+    app.settings.app.bank_access = BankAccessConfig(
+        logins=[LOGIN.model_copy(update={"accounts": links})]
+    )
     return app.settings
 
 
@@ -282,7 +304,7 @@ def test_linked_but_not_fetched_account_imports_everything(app, statement_pdf):
     """Issue #20: a cut-over date alone does not leave out bookings; only fetched days do."""
     settings_with([link("ING Girokonto", fetch_from=date(2026, 3, 25))], app)
     with app.session() as s:
-        assert fetch.cutovers(s, app.settings) == {}
+        assert connections.cutovers(s, app.settings) == {}
         r = import_service.import_file(s, app.settings, statement_pdf)
     assert r.added == 8
 
@@ -292,9 +314,9 @@ def test_import_file_uses_the_fetched_days(app, statement_pdf):
     giro = link("ING Girokonto", fetch_from=date(2026, 3, 25))
     fake.bookings[IBAN] = [tx(date(2026, 3, 26), -100)]
     with app.session() as s:
-        fetch.import_fetched(s, settings_with([giro], app), fetched(fake, [giro], s))
+        connections.import_fetched(s, settings_with([giro], app), fetched(fake, [giro], s))
         account = s.scalar(select(Account).where(Account.iban == IBAN))
-        assert fetch.cutovers(s, app.settings) == {account.id: (date(2026, 3, 25), TODAY)}
+        assert connections.cutovers(s, app.settings) == {account.id: (date(2026, 3, 25), TODAY)}
         r = import_service.import_file(s, app.settings, statement_pdf)
     assert r.added == 6  # 25. and 31.03. are fetched
 
@@ -321,7 +343,9 @@ def test_fetch_replaces_statement_bookings_after_the_cutover(app, statement_pdf)
     ]
     fake.balances[IBAN] = 355587 - 5000
     with app.session() as s:
-        result = fetch.import_fetched(s, app.settings, fetched(fake, [giro], s), retrain=False)
+        result = connections.import_fetched(
+            s, app.settings, fetched(fake, [giro], s), retrain=False
+        )
     assert (result.accounts[0].added, result.accounts[0].replaced) == (3, 2)
     assert result.balance_differences == []
     with app.session() as s:
@@ -344,26 +368,140 @@ def test_fetch_replaces_statement_bookings_after_the_cutover(app, statement_pdf)
 # -- configuration ------------------------------------------------------------------------
 
 
-def test_save_fints_round_trip_and_account_rename(app):
-    fints = FintsConfig(
+def test_save_bank_access_round_trip_and_account_rename(app):
+    access = BankAccessConfig(
+        connectors={"fints": {"product_id": "ABC123"}},
         logins=[
             BankLogin(
-                login_id="123456",
+                name="ING",
+                settings={
+                    "bank_code": "50010517",
+                    "server": "https://fints.ing.de/fints/",
+                    "login_id": "123456",
+                },
                 accounts=[link("ING Girokonto", fetch_from=date(2026, 4, 1))],
             )
-        ]
+        ],
     )
-    config_edit.save_fints(app.settings, fints)
+    config_edit.save_bank_access(app.settings, access)
     text = app.settings.config_file.read_text("utf-8")
     assert "pin" not in text.lower()
-    loaded = load_settings(app.settings.config_dir).app.fints
-    assert loaded == fints
+    loaded = load_settings(app.settings.config_dir).app.bank_access
+    assert loaded == access
     accounts = [
         OwnAccount(name="Giro", kind="giro", iban=IBAN) if a.name == "ING Girokonto" else a
         for a in app.settings.app.own_accounts
     ]
     config_edit.save_accounts(app.settings, accounts, {"ING Girokonto": "Giro"})
-    assert load_settings(app.settings.config_dir).app.fints.logins[0].accounts[0].account == "Giro"
+    logins = load_settings(app.settings.config_dir).app.bank_access.logins
+    assert logins[0].accounts[0].account == "Giro"
+
+
+FORMER_FINTS = """
+# Online banking
+fints:
+  product_id: ABC123
+  logins:
+    - name: ING
+      login_id: "123456"
+      accounts:
+        - bank_id: DE12345678901234567890
+          product: Girokonto
+          kind: giro
+          account: ING Girokonto
+          fetch_from: 2026-04-01
+    - name: Other bank
+      bank_code: "12345678"
+      server: https://fints.example.org/
+      login_id: "u1"
+backup:
+  keep: 10
+"""
+
+
+def test_former_fints_section_is_moved_to_bank_access(app):
+    """#82: the ``fints`` section up to 2026-11 is read as ``bank_access`` (with the former
+    defaults written out) and config.yaml is rewritten at the next start."""
+    from hiro_budget.app import App
+
+    config = app.settings.config_file
+    config.write_text(config.read_text("utf-8") + FORMER_FINTS, encoding="utf-8")
+    settings = load_settings(app.settings.config_dir)
+    access = settings.app.bank_access
+    assert access.connectors == {"fints": {"product_id": "ABC123"}}
+    ing, other = access.logins
+    assert (ing.connector, ing.name) == ("fints", "ING")
+    assert ing.settings == {
+        "bank_code": "50010517",
+        "server": "https://fints.ing.de/fints/",
+        "login_id": "123456",
+    }
+    assert ing.accounts[0].fetch_from == date(2026, 4, 1)
+    assert other.settings["server"] == "https://fints.example.org/"
+
+    App(settings)  # the start rewrites the file
+    text = config.read_text("utf-8")
+    assert "\nfints:" not in text and "\nbank_access:" in text
+    assert "# Online banking" in text and "keep: 10" in text  # the rest stays as it was
+    assert load_settings(app.settings.config_dir).app.bank_access == access
+
+
+def test_fints_server_must_use_https():
+    """#75: login ID and PIN never go to a server without TLS."""
+    from pydantic import ValidationError
+
+    from hiro_budget.plugins.fints.connector import FintsLogin
+
+    with pytest.raises(ValidationError, match="https://"):
+        FintsLogin(server="http://fints.example.org/", login_id="1")
+    assert FintsLogin(login_id="1").server == "https://fints.ing.de/fints/"
+    with pytest.raises(ValidationError):
+        FintsLogin(login_id="")  # required
+
+
+def test_settings_that_do_not_fit_the_connector_fail_before_connecting(app):
+    login = BankLogin(name="ING", settings={"login_id": "1", "server": "http://x"})
+    with pytest.raises(connections.SettingsError, match="server"):
+        connections.connect(app.settings, login, "1234", None)
+    unknown = BankLogin(connector="nonexistent", name="X")
+    with pytest.raises(connections.SettingsError, match="nonexistent"):
+        connections.connect(app.settings, unknown, "", None)
+
+
+def test_bank_traffic_stays_out_of_the_debug_log():
+    """#75: python-fints logs every message on DEBUG; with the app on DEBUG its logger
+    stays at INFO."""
+    import importlib
+    import logging
+
+    import hiro_budget.plugins.fints.client as client
+
+    root, library = logging.getLogger(), logging.getLogger("fints")
+    old = root.level, library.level
+    try:
+        root.setLevel(logging.DEBUG)
+        library.setLevel(logging.NOTSET)
+        importlib.reload(client)
+        assert library.getEffectiveLevel() == logging.INFO
+    finally:
+        root.setLevel(old[0])
+        library.setLevel(old[1])
+
+
+def test_fints_is_a_connector_plugin():
+    """The built-in plugin ``fints`` provides the connector; its title names the fetches in
+    the import history."""
+    from hiro_budget.importers import plugins
+
+    reg = plugins.discover(None)
+    assert reg.get("fints").status == "available"
+    c = reg.connector("fints")
+    assert (c.title, c.secret, c.options_model.__name__) == ("FinTS", "PIN", "FintsOptions")
+    assert c.suggest({"bank_code": "50010517"}) == {
+        "server": "https://fints.ing.de/fints/",
+        "name": "ING",
+    }
+    assert c.suggest({"bank_code": "1"}) == {}
 
 
 # -- FinTS conversion -----------------------------------------------------------------------
@@ -371,7 +509,7 @@ def test_save_fints_round_trip_and_account_rename(app):
 
 def test_mt940_booking_as_on_the_statement():
     from hiro_budget.plugin_api import enricher_for
-    from hiro_budget.services.bank.fints_client import kind_of, to_parsed
+    from hiro_budget.plugins.fints.client import kind_of, to_parsed
 
     t = to_parsed(
         {
@@ -417,7 +555,7 @@ def test_mt940_booking_as_on_the_statement():
 def test_app_confirmation_is_polled_until_confirmed():
     from fints.client import NeedTANResponse
 
-    from hiro_budget.services.bank.fints_client import _Session
+    from hiro_budget.plugins.fints.client import _Session
 
     class Pending(NeedTANResponse):
         def __init__(self) -> None:  # no bank message behind it
@@ -446,7 +584,7 @@ def test_app_confirmation_is_polled_until_confirmed():
     assert confirm.waits == 3
 
     confirm.wait_for_app = lambda challenge: False  # the user cancelled
-    with pytest.raises(bank.Cancelled):
+    with pytest.raises(Cancelled):
         _Session(Client(), confirm).answer(Pending())
 
 
@@ -455,7 +593,7 @@ def test_ing_accounts_without_type_and_depots_by_number():
     depot number (both seen in the real data, shapes only)."""
     from fints.models import SEPAAccount
 
-    from hiro_budget.services.bank.fints_client import _Session
+    from hiro_budget.plugins.fints.client import _Session
 
     giro = SEPAAccount("DE12500105170000000111", "INGDDEFFXXX", "0000000111", None, "50010517")
     depot = SEPAAccount("DE77500105178000001234", "INGDDEFFXXX", "8000001234", None, "50010517")
@@ -494,15 +632,15 @@ def test_find_account_by_iban_or_number(app):
     with app.session() as s:
         s.add(Account(name="ING Direkt-Depot", kind="depot", iban="8000001234"))
         s.flush()
-        depot = BankAccount(
+        depot = RemoteAccount(
             "DE77500105178000001234",
             "Direkt-Depot",
             "depot",
             "DE77500105178000001234",
             account_number="8000001234",
         )
-        assert fetch.find_account(s, depot).name == "ING Direkt-Depot"
-        giro = BankAccount(IBAN, "Girokonto", "giro", IBAN, account_number="1234567890")
-        assert fetch.find_account(s, giro).name == "ING Girokonto"
-        other = BankAccount("DE99999999999999999999", "Extra-Konto", "savings")
-        assert fetch.find_account(s, other) is None
+        assert connections.find_account(s, depot).name == "ING Direkt-Depot"
+        giro = RemoteAccount(IBAN, "Girokonto", "giro", IBAN, account_number="1234567890")
+        assert connections.find_account(s, giro).name == "ING Girokonto"
+        other = RemoteAccount("DE99999999999999999999", "Extra-Konto", "savings")
+        assert connections.find_account(s, other) is None

@@ -195,6 +195,32 @@ def test_invariant_over_several_months(app, statement_pdf) -> None:
             check_invariant(s, app.settings, m)
 
 
+def test_months_in_one_pass_equal_each_month_on_its_own(app, statement_pdf) -> None:
+    """#59: ``compute_months`` (one pass, carrying what is available) gives every month
+    exactly as ``compute_month`` (which replays all months before it)."""
+    from dataclasses import asdict
+
+    with app.session() as s:
+        import_service.import_file(s, app.settings, statement_pdf)
+        groceries, fun = cat(s, "lebensmittel.supermarkt"), cat(s, "freizeit.restaurants")
+        budget.set_assigned(s, MARCH, groceries, 100_00)
+        budget.set_assigned(s, APRIL, fun, 50_00)
+        budget.set_assigned(s, month_add(MAY, 2), fun, 10_00)
+        cash_booking(app, s, date(2026, 4, 3), -70_00, "freizeit.restaurants")  # overspend
+        cash_booking(app, s, date(2026, 5, 3), 25_00, "einkommen.sonstige_einnahmen")
+        start = budget.start_month(s, app.settings)
+        last = month_add(MAY, 3)
+        for balances in (True, False):
+            together = list(budget.compute_months(s, app.settings, start, last, None, balances))
+            months = [b.month for b in together]
+            assert months[0] == start and months[-1] == last
+            alone = [budget.compute_month(s, app.settings, m, None, balances) for m in months]
+            assert [asdict(b) for b in together] == [asdict(b) for b in alone]
+        later = list(budget.compute_months(s, app.settings, APRIL, MAY))
+        assert [b.month for b in later] == [APRIL, MAY]
+        assert asdict(later[1]) == asdict(budget.compute_month(s, app.settings, MAY))
+
+
 # --- targets -----------------------------------------------------------------------
 
 

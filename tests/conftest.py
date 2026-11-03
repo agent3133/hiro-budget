@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,13 @@ REAL_INPUT_DIR = REPO_ROOT / "input"
 def pytest_runtest_teardown(item):
     """Really delete the widgets of the test. pytest-qt closes them with deleteLater(),
     which only an event loop carries out (processEvents() does not): without this, every
-    window of every test stays alive, and each switch of the theme restyles all of them."""
+    window of every test stays alive, and each switch of the theme restyles all of them.
+
+    Classifier trainings still running in the background (#55) finish first, while the
+    widgets that wait for them are still there."""
+    training = sys.modules.get("hiro_budget.gui.training")
+    if training is not None:
+        training.wait_all()
     result = yield
     from PySide6.QtCore import QCoreApplication, QEvent
 

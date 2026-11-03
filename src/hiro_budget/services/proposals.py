@@ -57,6 +57,7 @@ class Proposal:
     def envelope(self) -> Envelope:
         if self.is_group:
             return Envelope("group", self.group_id)
+        assert self.category_id is not None  # only a group envelope has none
         return Envelope("category", self.category_id)
 
     @property
@@ -141,6 +142,7 @@ def propose(
         )
     )
     for cat_id, booked, amount in rows:
+        assert cat_id is not None  # joined with Category
         spending[cat_id][month_of(booked)] -= amount  # outflows count positive
 
     recent = history[-months:]

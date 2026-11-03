@@ -179,7 +179,9 @@ def report_breakdown(
         )
         target = left_out if one_off and not one_offs else counted
         target.add(kind, category, booking)
-    kinds = ["income", "expenses"] if measure == "saved" else [measure]
+    kinds: list[Literal["income", "expenses"]] = (
+        ["income", "expenses"] if measure == "saved" else [measure]
+    )
     return Breakdown(
         [counted.section(k) for k in kinds],
         [p for k in kinds for p in left_out.section(k).parts],

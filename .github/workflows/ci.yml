@@ -16,5 +16,12 @@ jobs:
         run: |
           uv run ruff check src tests packaging scripts demo
           uv run ruff format --check src tests packaging scripts demo
+      - name: Type check (services, importers, db, config; see [tool.mypy])
+        run: uv run mypy
       - name: Tests (GUI tests run headless)
         run: uv run pytest -q
+      - name: Known vulnerabilities in the runtime dependencies
+        shell: bash
+        run: |
+          uv export --no-default-groups --no-hashes --no-emit-project --format requirements-txt -o runtime.txt
+          uvx pip-audit -r runtime.txt --progress-spinner off

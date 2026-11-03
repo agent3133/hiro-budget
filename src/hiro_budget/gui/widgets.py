@@ -7,16 +7,20 @@ the object names, so they follow a theme switch without code in the views.
 
 from __future__ import annotations
 
-from PySide6.QtCore import QLocale, QRectF, QSize, Qt, Signal
+from PySide6.QtCore import QCoreApplication, QLocale, QRectF, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPalette, QPen
 from PySide6.QtWidgets import (
     QAbstractButton,
+    QAbstractItemView,
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QStyle,
     QStyleOptionViewItem,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -45,6 +49,19 @@ def caption(text: str) -> QLabel:
     font.setLetterSpacing(QFont.SpacingType.AbsoluteSpacing, 0.8)
     label.setFont(font)
     return label
+
+
+def revert_by_key(parent: QWidget, button: QAbstractButton) -> None:
+    """The revert key (Ctrl+Shift+R): asks first, as a key is easily hit by accident."""
+    if not button.isEnabled():
+        return
+    answer = QMessageBox.question(
+        parent,
+        QCoreApplication.translate("widgets", "Revert"),
+        QCoreApplication.translate("widgets", "Discard the unsaved changes?"),
+    )
+    if answer == QMessageBox.StandardButton.Yes:
+        button.click()
 
 
 def icon_button(glyph: str, fallback: str, tip: str, slot) -> QPushButton:
@@ -135,6 +152,7 @@ class StatCard(QFrame):
         super().__init__(parent)
         self.setObjectName("statCard")
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)  # Tab, then Space / Return (#70)
         self.state = ""
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
@@ -165,6 +183,7 @@ class StatCard(QFrame):
             background = t[self.state] if self.state else t["panel"]
             ink = t[self.state + "_text"] if self.state else t["text"]
             muted, radius = (ink if self.state else t["muted"]), 14
+            ring = t["accent"]
         else:
             background = {
                 "pos": "rgba(46, 158, 91, 0.16)",
@@ -173,11 +192,20 @@ class StatCard(QFrame):
             }.get(self.state, "rgba(128, 128, 128, 0.10)")
             ink = muted = "palette(text)"
             radius = 12
+            ring = "palette(highlight)"
         self.setStyleSheet(
-            f"QFrame#statCard {{ background: {background}; border-radius: {radius}px; }}"
+            f"QFrame#statCard {{ background: {background}; border-radius: {radius}px;"
+            " border: 2px solid transparent; }"
+            f"QFrame#statCard:focus {{ border-color: {ring}; }}"
             f"QFrame#statCard QLabel {{ background: transparent; color: {muted}; }}"
             f"QFrame#statCard QLabel#value {{ color: {ink}; }}"
         )
+
+    def keyPressEvent(self, event) -> None:
+        if event.key() in (Qt.Key.Key_Space, Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            self.clicked.emit()
+        else:
+            super().keyPressEvent(event)
 
     def mouseReleaseEvent(self, event) -> None:
         if event.button() == Qt.MouseButton.LeftButton and self.rect().contains(
@@ -287,3 +315,22 @@ class DetailCard(QFrame):
 
     def set_heading(self, text: str) -> None:
         self.heading.setText(text)
+
+
+Drop = QAbstractItemView.DropIndicatorPosition
+
+
+class DropTree(QTreeWidget):
+    """A tree whose drag and drop only reports the move: the view reorders its own data
+    and fills the tree again, so Qt must not move (or remove) the dragged row itself."""
+
+    #: (dragged item, item under the cursor, drop indicator position)
+    dropped = Signal(QTreeWidgetItem, QTreeWidgetItem, Drop)
+
+    def dropEvent(self, event) -> None:
+        item = self.currentItem()
+        target = self.itemAt(event.position().toPoint())
+        if item is not None and target is not None and target is not item:
+            self.dropped.emit(item, target, self.dropIndicatorPosition())
+        event.setDropAction(Qt.DropAction.IgnoreAction)
+        event.accept()

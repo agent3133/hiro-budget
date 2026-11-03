@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+import re
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -15,6 +17,22 @@ from hiro_budget.services.counterparts import sync_all_counterparts
 from hiro_budget.services.sync import rename_keys, sync_accounts, sync_categories
 from hiro_budget.ui_state import UiState
 
+_FINTS_SECTION = re.compile(r"^fints:", re.MULTILINE)
+
+
+def _migrate_fints_section(settings: Settings) -> None:
+    """The ``fints`` section (up to 2026-11) becomes ``bank_access`` in config.yaml (#82);
+    the loaded settings have it converted already."""
+    try:
+        text = settings.config_file.read_text(encoding="utf-8")
+    except OSError:
+        return
+    if _FINTS_SECTION.search(text):
+        from hiro_budget.services.config_edit import migrate_bank_access
+
+        migrate_bank_access(settings.config_file)
+        logging.getLogger(__name__).info("config.yaml: fints section moved to bank_access")
+
 
 class App:
     def __init__(self, settings: Settings, db_path: Path | str | None = None) -> None:
@@ -23,9 +41,11 @@ class App:
             from hiro_budget.importers.plugins import migrate_csv_formats
 
             migrate_csv_formats(settings.config_dir)
+        _migrate_fints_section(settings)
         db = Path(db_path or settings.db_path)
         self.session_factory: sessionmaker[Session] = open_database(db)
         self.ui_state = UiState(db.parent / "ui_state.json")
+        self.restart = None  # a RestartRequest once the data folder was moved (#29)
         self.sync_config()
 
     @classmethod

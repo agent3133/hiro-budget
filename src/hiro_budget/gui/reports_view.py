@@ -11,10 +11,9 @@ from PySide6.QtCharts import (
     QPieSeries,
     QPieSlice,
     QStackedBarSeries,
-    QValueAxis,
 )
 from PySide6.QtCore import QLocale, QMargins, Qt, Signal
-from PySide6.QtGui import QBrush, QColor, QCursor, QFont, QFontMetrics, QPalette, QPen
+from PySide6.QtGui import QBrush, QColor, QCursor, QFontMetrics, QPalette, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -29,23 +28,27 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from sqlalchemy import select
 
 from hiro_budget.app import App
-from hiro_budget.db.models import Account
+from hiro_budget.gui import shortcuts
 from hiro_budget.gui.charts import (
     add_bar_tooltips,
     attach,
     chart_view,
     expense_color,
     income_color,
+    legend_dot,
+    mark_partial,
     money_axis,
     month_axis,
     month_label,
+    month_labels,
+    new_bar_set,
     new_chart,
-    nice_max,
-    nice_min,
+    one_off_name,
     set_chart,
+    strip_markup,
+    text_label,
 )
 from hiro_budget.gui.common import (
     accent_color,
@@ -58,13 +61,7 @@ from hiro_budget.gui.common import (
     to_qdate,
 )
 from hiro_budget.gui.date_range import DateRangeButton
-from hiro_budget.gui.report_pages import (
-    DONUT_HOLE,
-    DONUT_LABEL_SHARE,
-    DONUT_MAX_FIXED,
-    DONUT_SIZE,
-    LEGEND_DOT,
-    PAGE_TOP_MARGIN,
+from hiro_budget.gui.reports import (
     BudgetActualReport,
     CashFlowReport,
     DepotReport,
@@ -75,18 +72,28 @@ from hiro_budget.gui.report_pages import (
     SavingsRateReport,
     TopPayeesReport,
     YearComparisonReport,
+)
+from hiro_budget.gui.reports.base import (
+    PAGE_TOP_MARGIN,
     breakdown_context,
-    donut_ring,
     month_range,
-    one_off_name,
     one_off_note,
     open_breakdown,
+)
+from hiro_budget.gui.reports.donut import (
+    DONUT_HOLE,
+    DONUT_LABEL_SHARE,
+    DONUT_MAX_FIXED,
+    DONUT_SIZE,
+    LEGEND_DOT,
+    donut_ring,
     shade,
 )
 from hiro_budget.gui.widgets import page_title
-from hiro_budget.services import drilldown, recurring, reports
+from hiro_budget.services import drilldown, lookups, recurring, reports
 
 CATEGORY_LEGEND_MAX = 170  # px for a legend line of the category donut
+DONUT_MAX_GROUPS = 10  # group slices; with more groups the smallest are "Others"
 CATEGORY_LEGEND_GAP = 3  # px between its lines
 
 
@@ -126,7 +133,14 @@ class ReportsView(QWidget):
         bar.addWidget(self.totals)
 
         self.monthly_view = chart_view(new_chart(self.tr("Income and expenses per month")))
-        self.category_view = chart_view(new_chart(self.tr("Expenses by category")))
+        self.category_view = chart_view(new_chart(self.tr("Expenses by group")))
+        # the donut shows the groups; a click on one shows its categories, this goes back
+        self.donut_back = QLabel(
+            "<a href='#'>" + self.tr("← All groups") + "</a>", self.category_view
+        )
+        self.donut_back.linkActivated.connect(lambda _link: self.show_donut_group(None))
+        self.donut_back.move(12, 8)
+        self.donut_back.hide()
         self.trend_view = chart_view(new_chart(self.tr("Category trend")))
         self.costs_view = chart_view(new_chart(self.tr("Fixed and variable costs per month")))
 
@@ -176,6 +190,18 @@ class ReportsView(QWidget):
             page.show_booking.connect(self.show_booking)
         self._stale: set[int] = set()  # pages to redraw when they are shown
         self.tabs.currentChanged.connect(self._tab_changed)
+        # Ctrl+PgDn / PgUp: the report tabs (Ctrl+Tab stays the sidebar's pages, #67)
+        here = Qt.ShortcutContext.WidgetWithChildrenShortcut
+        for index, step in ((0, 1), (1, -1)):
+            shortcuts.bind("report_tab", self, lambda s=step: self.step_tab(s), here, index=index)
+        for index, step in ((0, -1), (1, 1)):
+            shortcuts.bind(
+                "report_period", self, lambda s=step: self.period.step(s), here, index=index
+            )
+        for i in range(9):
+            shortcuts.bind(
+                "report_n", self, lambda i=i: self.tabs.setCurrentIndex(i), here, index=i
+            )
 
         layout = QVBoxLayout(self)
         layout.addWidget(page_title(self.tr("Reports")))
@@ -191,11 +217,14 @@ class ReportsView(QWidget):
         self._cats: list[reports.CategoryTotal] = []
         # the donut: its slices (name, categories), centre text and legend
         self._slices: list[tuple[str, list[reports.CategoryTotal]]] = []
+        self._donut_group: int | None = None  # the group whose categories are shown
         self._center: list[QGraphicsSimpleTextItem] = []
         self._legend: list[tuple[QGraphicsEllipseItem, QGraphicsSimpleTextItem]] = []
         self.months: list[reports.MonthTotals] = []
+        self.partial: tuple[str, date] | None = None  # see reports.partial_month
         self.costs: dict[str, recurring.MonthCosts] = {}
         self._loaded = False  # the data is loaded when the page is first shown
+        self._overview_stale = False  # its charts are drawn when the tab is shown (#60)
 
     # -- data ------------------------------------------------------------------
 
@@ -224,7 +253,7 @@ class ReportsView(QWidget):
             prev_acc = self.account.currentData()
             self.account.clear()
             self.account.addItem(self.tr("All accounts"), None)
-            for a in s.scalars(select(Account).order_by(Account.name)):
+            for a in lookups.accounts(s):
                 self.account.addItem(a.name, a.id)
             if prev_acc is not None:
                 self.account.setCurrentIndex(max(0, self.account.findData(prev_acc)))
@@ -286,12 +315,7 @@ class ReportsView(QWidget):
         one_offs = self.one_offs.isChecked()
         with self.app.session() as s:
             months = reports.monthly_totals(s, start, end, account, one_offs)
-            cats = reports.category_totals(s, start, end, account, one_offs)
-            self.costs = recurring.costs_by_month(s, start, end, account, one_offs)
-        self.months = months
-        self._draw_monthly(months)
-        self._draw_costs()
-        self._draw_categories(cats)
+        self.months = months  # the totals in the bar above every tab
         income = sum(m.income_cents for m in months)
         expenses = sum(m.expense_cents for m in months)
         text = (
@@ -309,10 +333,27 @@ class ReportsView(QWidget):
             text += " · " + (self.tr("with one-offs") if one_offs else self.tr("without one-offs"))
         self.totals.setText(text)
         self.totals.setToolTip(note)
-        self._refresh_trend()
-        # Other reports: redraw the visible one now, the rest when they are shown.
+        # Redraw the visible report now, the others (the overview too) when they are shown.
+        self._overview_stale = True
         self._stale = set(range(len(self.pages)))
         self._tab_changed()
+
+    def ensure_overview(self) -> None:
+        """The overview's data and charts for the current filter (when its tab is shown,
+        and before an export, which takes its category totals)."""
+        if not self._overview_stale:
+            return
+        self._overview_stale = False
+        start, end, account = self._filter()
+        one_offs = self.one_offs.isChecked()
+        with self.app.session() as s:
+            cats = reports.category_totals(s, start, end, account, one_offs)
+            self.costs = recurring.costs_by_month(s, start, end, account, one_offs)
+            self.partial = reports.partial_month(s, end)  # a month with data missing
+        self._draw_monthly(self.months)
+        self._draw_costs()
+        self._draw_categories(cats)
+        self._refresh_trend()
 
     def nav_state(self) -> int:
         """The report shown, for going back here (history)."""
@@ -321,8 +362,18 @@ class ReportsView(QWidget):
     def restore_nav_state(self, index: int) -> None:
         self.tabs.setCurrentIndex(index)
 
+    def focus_regions(self) -> list[QWidget]:
+        """F6: the filter bar, then the report tabs."""
+        return [self.period, self.tabs.tabBar()]
+
+    def step_tab(self, step: int) -> None:
+        """The next / previous report tab, round."""
+        self.tabs.setCurrentIndex((self.tabs.currentIndex() + step) % self.tabs.count())
+
     def _tab_changed(self) -> None:
         page = self.tabs.currentWidget()
+        if self.tabs.currentIndex() == 0:
+            self.ensure_overview()
         if isinstance(page, ReportPage) and self.pages.index(page) in self._stale:
             self._stale.discard(self.pages.index(page))
             page.refresh(*self._filter(), one_offs=self.one_offs.isChecked())
@@ -331,13 +382,10 @@ class ReportsView(QWidget):
 
     def _draw_monthly(self, months: list[reports.MonthTotals]) -> None:
         chart = new_chart(self.tr("Income and expenses per month"))
-        income = QBarSet(self.tr("Income"))
-        expenses = QBarSet(self.tr("Expenses"))
-        income.setColor(income_color())
-        expenses.setColor(expense_color())
+        income = new_bar_set(self.tr("Income"), income_color())
+        expenses = new_bar_set(self.tr("Expenses"), expense_color())
         # Balance as a third bar (a line would be invisible with a single month).
-        net = QBarSet(self.tr("Balance"))
-        net.setColor(accent_color())
+        net = new_bar_set(self.tr("Balance"), accent_color())
         for m in months:
             income.append(m.income_cents / 100)
             expenses.append(m.expense_cents / 100)
@@ -348,22 +396,17 @@ class ReportsView(QWidget):
             bar_set.doubleClicked.connect(
                 lambda i, m=measure: self._drill_month(months[i].month, m)
             )
-        months_labels = [month_label(m.month) for m in months]
-        add_bar_tooltips(series, months_labels)
+        month_keys = [m.month for m in months]
+        mark_partial([income, expenses, net], month_keys, self.partial)
+        axis_labels = month_labels(month_keys, self.partial)
+        add_bar_tooltips(series, [strip_markup(label) for label in axis_labels])
         chart.addSeries(series)
 
         x = QBarCategoryAxis()
-        x.append(months_labels)
+        x.append(axis_labels)
         values = [m.income_cents / 100 for m in months] + [m.expense_cents / 100 for m in months]
         values += [m.net_cents / 100 for m in months]
-        y = QValueAxis()
-        y.setRange(min(0, nice_min(min(values, default=0))), nice_max(max(values, default=0)))
-        y.setLabelFormat("%.0f")
-        y.setTitleText("EUR")
-        chart.addAxis(x, Qt.AlignmentFlag.AlignBottom)
-        chart.addAxis(y, Qt.AlignmentFlag.AlignLeft)
-        series.attachAxis(x)
-        series.attachAxis(y)
+        attach(chart, series, x, money_axis(values))
         set_chart(self.monthly_view, chart)
 
     def _draw_costs(self) -> None:
@@ -374,8 +417,7 @@ class ReportsView(QWidget):
             set_chart(self.costs_view, chart)
             return
         costs = [self.costs.get(m, recurring.MonthCosts(m)) for m in months]
-        fixed = QBarSet(self.tr("Fixed costs"))
-        fixed.setColor(accent_color())
+        fixed = new_bar_set(self.tr("Fixed costs"), accent_color())
         variable = QBarSet(self.tr("Variable costs"))
         neutral = self.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
         variable.setBrush(QBrush(neutral, Qt.BrushStyle.BDiagPattern))  # as on Fixed costs
@@ -386,7 +428,8 @@ class ReportsView(QWidget):
         bars = QStackedBarSeries()
         bars.append(fixed)
         bars.append(variable)
-        labels = [month_label(m) for m in months]
+        mark_partial([fixed], months, self.partial)  # the hatched set keeps its pattern
+        labels = [strip_markup(label) for label in month_labels(months, self.partial)]
 
         def hovered(status: bool, index: int, _bar_set: QBarSet) -> None:
             if status:
@@ -408,16 +451,40 @@ class ReportsView(QWidget):
         for bar_set in (fixed, variable):
             bar_set.doubleClicked.connect(lambda i: self._drill_month(months[i], "expenses"))
         totals = [v for c in costs for v in (c.expense_cents / 100, c.variable_cents / 100)]
-        attach(chart, bars, month_axis(months), money_axis(totals))
+        attach(chart, bars, month_axis(months, self.partial), money_axis(totals))
         set_chart(self.costs_view, chart)
 
     def _draw_categories(self, cats: list[reports.CategoryTotal]) -> None:
-        """The expenses as a donut (as on Fixed costs): the largest categories in shades of
-        their budget group's colour, the rest as "Others"; the legend on its right."""
+        """New data for the donut; a group shown stays shown while it has expenses."""
         self._cats = cats
-        chart = new_chart(self.tr("Expenses by category"))
+        shown = {c.group_id for c in cats if c.expense_cents > 0 and not _uncategorized(c)}
+        if self._donut_group not in shown:
+            self._donut_group = None
+        self._draw_donut()
+
+    def show_donut_group(self, group_id: int | None) -> None:
+        """The categories of a group in the donut, or (None) all groups."""
+        self._donut_group = group_id
+        self._draw_donut()
+
+    def _draw_donut(self) -> None:
+        """The expenses as a donut (as on Fixed costs), the legend on its right: by budget
+        group in the group colours (#52: "Others" of categories was half of all expenses),
+        or the categories of one group in shades of its colour (the largest, then "Others").
+        A click on a group shows its categories; a double-click on a category its bookings."""
+        group = self._donut_group
+        positive = [c for c in self._cats if c.expense_cents > 0]
+        if group is not None:
+            positive = [c for c in positive if c.group_id == group and not _uncategorized(c)]
+        title = (
+            self.tr("Expenses by group")
+            if group is None
+            else self.tr("Expenses: %1").replace("%1", positive[0].group_name)
+        )
+        chart = new_chart(title)
         chart.legend().hide()
-        positive = [c for c in cats if c.expense_cents > 0]
+        self.donut_back.setVisible(group is not None)
+        self.donut_back.raise_()
         total = sum(c.expense_cents for c in positive)
         self._slices, self._center, self._legend = [], [], []
         if not total:
@@ -434,7 +501,12 @@ class ReportsView(QWidget):
         metrics = QFontMetrics(self.font())
         legend_width = 0
         texts = []
-        for name, items, brush in self._category_slices(positive, colors):
+        slices = (
+            self._group_slices(positive, colors)
+            if group is None
+            else self._category_slices(positive, colors)
+        )
+        for name, items, brush in slices:
             cents = sum(c.expense_cents for c in items)
             share = cents * 100 / total
             piece = series.append(f"{fmt_number(share, 0)} %", cents / 100)
@@ -445,25 +517,38 @@ class ReportsView(QWidget):
             piece.setLabelVisible(share >= DONUT_LABEL_SHARE)
             piece.setLabelColor(ink)
             piece.setLabelPosition(QPieSlice.LabelPosition.LabelInsideHorizontal)
+            piece.setProperty("drill_label", name)  # the breakdown menu (#70)
             lines = [f"{name}: {money(cents)} ({fmt_number(share, 1)} %)"]
-            if len(items) > 1:  # "Others": the categories in it
-                lines += [f"{self._category_label(c)}: {money(c.expense_cents)}" for c in items]
+            if len(items) > 1:  # a group or "Others": the categories in it
+                listed = items[:DONUT_MAX_FIXED]
+                lines += [f"{self._category_label(c)}: {money(c.expense_cents)}" for c in listed]
+                if len(items) > len(listed):
+                    lines.append("…")
+            if (
+                group is None
+                and len({c.group_id for c in items}) == 1
+                and not any(_uncategorized(c) for c in items)
+            ):
+                lines.append(self.tr("Click: the categories of the group"))
+                piece.clicked.connect(lambda g=items[0].group_id: self.show_donut_group(g))
+            else:
+                piece.doubleClicked.connect(
+                    lambda items=items, name=name: self._drill_categories(items, name)
+                )
             tip = "\n".join(lines)
             piece.hovered.connect(lambda on, p=piece, tip=tip: self._hover(p, on, tip))
-            piece.doubleClicked.connect(
-                lambda items=items, name=name: self._drill_categories(items, name)
-            )
             self._slices.append((name, items))
             texts.append(f"{name}  {fmt_number(share, 0)} %")
             legend_width = max(legend_width, metrics.horizontalAdvance(texts[-1]))
         chart.addSeries(series)  # slices without a brush get the chart theme's colours
         self._legend = [
-            (self._legend_dot(chart, piece.brush()), self._text(chart, text))
+            (legend_dot(chart, piece.brush(), LEGEND_DOT), text_label(chart, self.font(), text))
             for piece, text in zip(series.slices(), texts, strict=True)
         ]
+        center_name = self.tr("expenses") if group is None else positive[0].group_name
         self._center = [
-            self._text(chart, f"{fmt_number(total / 100, 0)} €", 1.2, bold=True),
-            self._text(chart, self.tr("expenses")),
+            text_label(chart, self.font(), f"{fmt_number(total / 100, 0)} €", 1.2, bold=True),
+            text_label(chart, self.font(), center_name),
         ]
         # the legend right of the donut: at most a third of the chart's width per name
         room = min(legend_width, CATEGORY_LEGEND_MAX) + LEGEND_DOT + 6
@@ -471,6 +556,38 @@ class ReportsView(QWidget):
         chart.plotAreaChanged.connect(lambda _area: self._place_donut_overlays())
         set_chart(self.category_view, chart)
         self._place_donut_overlays()
+
+    def _group_slices(
+        self, positive: list[reports.CategoryTotal], colors: dict[int, str]
+    ) -> list[tuple[str, list[reports.CategoryTotal], QBrush | None]]:
+        """(name, categories, brush) per budget group, largest first, in the group colours
+        (a colour used again gets the next shade, so groups differ); with more than
+        ``DONUT_MAX_GROUPS`` the smallest are "Others"; uncategorized last."""
+        per_group: dict[int | None, list[reports.CategoryTotal]] = {}
+        for c in positive:
+            per_group.setdefault(None if _uncategorized(c) else c.group_id, []).append(c)
+        uncategorized = per_group.pop(None, [])
+        ranked = sorted(per_group.values(), key=lambda cs: -sum(c.expense_cents for c in cs))
+        keep = ranked if len(ranked) <= DONUT_MAX_GROUPS else ranked[: DONUT_MAX_GROUPS - 1]
+        rest = [c for cs in ranked[len(keep) :] for c in cs]
+        neutral = self.palette().color(QPalette.ColorGroup.Disabled, QPalette.ColorRole.Text)
+        used: dict[str, int] = {}
+        out = []
+        for cs in keep:
+            group_id = cs[0].group_id
+            brush = None
+            if group_id in colors:
+                n = used.get(colors[group_id], 0)
+                used[colors[group_id]] = n + 1
+                brush = QBrush(shade(QColor(colors[group_id]), n))
+            out.append((cs[0].group_name, cs, brush))
+        if rest:
+            other = neutral.lighter(130) if is_dark() else neutral.darker(115)
+            groups = len({c.group_id for c in rest})
+            out.append((self.tr("Others (%1)").replace("%1", str(groups)), rest, QBrush(other)))
+        if uncategorized:
+            out.append((self.tr("Uncategorized"), uncategorized, QBrush(neutral)))
+        return out
 
     def _category_label(self, c: reports.CategoryTotal) -> str:
         if c.key == reports.UNCATEGORIZED_KEY:
@@ -522,21 +639,6 @@ class ReportsView(QWidget):
         else:
             QToolTip.hideText()
 
-    def _text(self, chart, text: str, size: float = 1.0, bold: bool = False):
-        item = QGraphicsSimpleTextItem(text, chart)
-        font = QFont(self.font())
-        font.setPointSizeF(font.pointSizeF() * size)
-        font.setBold(bold)
-        item.setFont(font)
-        item.setBrush(chart.titleBrush())
-        return item
-
-    def _legend_dot(self, chart, brush: QBrush) -> QGraphicsEllipseItem:
-        dot = QGraphicsEllipseItem(0, 0, LEGEND_DOT, LEGEND_DOT, chart)
-        dot.setBrush(brush)
-        dot.setPen(QPen(brush.color(), 1))
-        return dot
-
     def _place_donut_overlays(self) -> None:
         """The total in the middle of the hole, the legend in one column on the right."""
         chart = self.category_view.chart()
@@ -576,8 +678,10 @@ class ReportsView(QWidget):
         # Expense categories are shown as positive amounts; refunds can make a month negative.
         sign = -1 if sum(v for _, v in points) < 0 else 1
         values = [sign * v / 100 for _, v in points]
-        bars = QBarSet(self.trend_category.currentText().strip())
-        bars.setColor(accent_color() if sign > 0 else expense_color())
+        bars = new_bar_set(
+            self.trend_category.currentText().strip(),
+            accent_color() if sign > 0 else expense_color(),
+        )
         for v in values:
             bars.append(v)
         series = QBarSeries()
@@ -600,14 +704,7 @@ class ReportsView(QWidget):
             if len(points) > 6
             else labels
         )
-        y = QValueAxis()
-        y.setRange(nice_min(min(values, default=0)), nice_max(max(values, default=0)))
-        y.setLabelFormat("%.0f")
-        y.setTitleText("EUR")
-        chart.addAxis(x, Qt.AlignmentFlag.AlignBottom)
-        chart.addAxis(y, Qt.AlignmentFlag.AlignLeft)
-        series.attachAxis(x)
-        series.attachAxis(y)
+        attach(chart, series, x, money_axis(values))
         chart.setTitle(
             self.tr("Trend: %1").replace("%1", self.trend_category.currentText().strip())
         )
@@ -670,3 +767,7 @@ class ReportsView(QWidget):
             last,
             lambda s: drilldown.report_breakdown(s, measure, first, last, account, True, [cat_id]),
         )
+
+
+def _uncategorized(c: reports.CategoryTotal) -> bool:
+    return c.key == reports.UNCATEGORIZED_KEY

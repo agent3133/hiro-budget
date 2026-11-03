@@ -3,7 +3,7 @@
 from datetime import date
 
 import pytest
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLocale, Qt
 from PySide6.QtWidgets import QMessageBox
 from sqlalchemy import select
 
@@ -131,7 +131,7 @@ def test_account_without_history_counts_back(opening_only) -> None:
 
 
 def test_net_worth_page_marks_estimates(qtbot, opening_only) -> None:
-    from hiro_budget.gui.report_pages import NetWorthReport
+    from hiro_budget.gui.reports import NetWorthReport
 
     page = NetWorthReport(opening_only)
     qtbot.addWidget(page)
@@ -146,7 +146,7 @@ def test_net_worth_page_marks_estimates(qtbot, opening_only) -> None:
 
 
 def test_net_worth_page(qtbot, imported) -> None:
-    from hiro_budget.gui.report_pages import NetWorthReport
+    from hiro_budget.gui.reports import NetWorthReport
 
     page = NetWorthReport(imported)
     qtbot.addWidget(page)
@@ -159,7 +159,7 @@ def test_net_worth_page(qtbot, imported) -> None:
 
 
 def test_reports_view_has_a_tab_per_report(qtbot, imported) -> None:
-    from hiro_budget.gui.report_pages import ReportPage
+    from hiro_budget.gui.reports import ReportPage
     from hiro_budget.gui.reports_view import ReportsView
 
     view = ReportsView(imported)
@@ -214,7 +214,7 @@ def test_used_share_without_meaning(imported) -> None:
 
 def test_budget_vs_actual_page(qtbot, imported) -> None:
     from hiro_budget.db.models import Category
-    from hiro_budget.gui.report_pages import BudgetActualReport
+    from hiro_budget.gui.reports import BudgetActualReport
     from hiro_budget.services import budget
 
     with imported.session() as s:
@@ -272,7 +272,7 @@ def test_rolling_rate_is_saved_over_income() -> None:
 
 
 def test_savings_rate_page(qtbot, imported) -> None:
-    from hiro_budget.gui.report_pages import SavingsRateReport
+    from hiro_budget.gui.reports import SavingsRateReport
 
     page = SavingsRateReport(imported)
     qtbot.addWidget(page)
@@ -334,7 +334,7 @@ def test_year_row_change() -> None:
 
 
 def test_year_comparison_page(qtbot, imported) -> None:
-    from hiro_budget.gui.report_pages import YearComparisonReport
+    from hiro_budget.gui.reports import YearComparisonReport
 
     page = YearComparisonReport(imported)
     qtbot.addWidget(page)
@@ -345,6 +345,41 @@ def test_year_comparison_page(qtbot, imported) -> None:
     expenses = page.table.item(page.table.rowCount() - 1, 0).text()
     assert expenses in ("Expenses", "Ausgaben")  # totals at the end
     assert page.view.chart().series()
+
+
+def test_year_comparison_cut_at_a_day(imported) -> None:
+    # #33: both years end at the same day, not at the end of a month
+    from hiro_budget.services import reports
+
+    with imported.session() as s:
+        for day, cents in ((date(2025, 3, 10), -30_00), (date(2025, 3, 20), -40_00)):
+            txs.create_manual(
+                s, imported.settings, ManualEntry(account_id(s, "Bargeld"), day, cents, "Kiosk")
+            )
+        to_15 = reports.year_comparison(s, 2025, 2026, last_month=3, last_day=15)
+        whole_march = reports.year_comparison(s, 2025, 2026, last_month=3)
+        feb = reports.year_comparison(s, 2023, 2024, last_month=2, last_day=29)  # no crash
+    assert to_15.expenses[0] == 30_00 and whole_march.expenses[0] == 70_00
+    assert to_15.last_day == 15 and feb.last_day == 29
+
+
+def test_year_comparison_page_cuts_at_the_last_booking(qtbot, imported, monkeypatch) -> None:
+    from hiro_budget.gui.reports import YearComparisonReport
+    from hiro_budget.services import reports
+
+    monkeypatch.setattr(
+        reports, "booking_date_range", lambda s: (date(2025, 1, 2), date(2026, 3, 15))
+    )
+    page = YearComparisonReport(imported)
+    qtbot.addWidget(page)
+    page.refresh(date(2026, 1, 1), date(2026, 3, 15), None)
+    assert page.same_period.isVisible() or not page.isVisible()
+    assert page.same_period.isChecked() and page._cut == date(2026, 3, 15)
+    text = page.same_period.text()
+    assert "15" in text and QLocale().monthName(3) in text and QLocale().monthName(1) in text
+    assert (page.data.last_month, page.data.last_day) == (3, 15)
+    page.same_period.setChecked(False)
+    assert (page.data.last_month, page.data.last_day) == (12, None)
 
 
 # --- fixed costs & subscriptions -------------------------------------------------------
@@ -400,7 +435,7 @@ def test_payee_key_ignores_numbers() -> None:
 
 
 def test_recurring_page(qtbot, payments) -> None:
-    from hiro_budget.gui.report_pages import RecurringReport
+    from hiro_budget.gui.reports import RecurringReport
 
     page = RecurringReport(payments)
     qtbot.addWidget(page)
@@ -417,6 +452,22 @@ def test_recurring_page(qtbot, payments) -> None:
     assert page._center[0].text().startswith("9,99")
     legend = [label.text() for _, label, _, _ in page._legend]
     assert len(legend) == 2 and legend[1].startswith("Variable costs")
+
+
+def test_recurring_page_marks_overdue_payments(qtbot, payments) -> None:
+    # #31: a due date in the past without a booking is marked (bold, tooltip, note)
+    from hiro_budget.gui.reports import RecurringReport
+
+    page = RecurringReport(payments)
+    qtbot.addWidget(page)
+    page.refresh(date(2026, 1, 1), date(2026, 10, 20), None)
+    overdue = 0
+    for row, r in enumerate(page.data.items):
+        item = page.table.item(row, 6)
+        late = r.next_due < date.today()
+        overdue += late
+        assert item.font().bold() == late and bool(item.toolTip()) == late
+    assert ("overdue" in page.note.text() or "überfällig" in page.note.text()) == bool(overdue)
 
 
 def test_variable_costs(payments) -> None:
@@ -437,7 +488,7 @@ def test_variable_costs(payments) -> None:
 def test_recurring_segments(payments) -> None:
     from types import SimpleNamespace
 
-    from hiro_budget.gui.report_pages import RecurringReport
+    from hiro_budget.gui.reports import RecurringReport
 
     def item(payee, category, group, cents):
         return SimpleNamespace(payee=payee, category=category, group_id=group, monthly_cents=cents)
@@ -500,6 +551,36 @@ def test_category_slices(qtbot, payments) -> None:
     assert [c.category_name for c in slices[-1][1]] == ["C7", "C8", "C9"]
 
 
+def test_group_slices(qtbot, payments) -> None:
+    # #52: the donut by budget group; "Others" only beyond 10 groups, uncategorized last
+    from hiro_budget.gui.reports_view import ReportsView
+    from hiro_budget.services.reports import UNCATEGORIZED_KEY, CategoryTotal
+
+    view = ReportsView(payments)
+    qtbot.addWidget(view)
+    colors = {g: "#E4B9B4" if g % 2 else "#ADC4C3" for g in range(1, 13)}
+
+    def cats(groups):
+        return [
+            CategoryTotal(10 * g + k, f"c{g}{k}", f"G{g}", f"C{g}{k}", (100 - g) * 100, group_id=g)
+            for g in range(1, groups + 1)
+            for k in range(2)
+        ]
+
+    slices = view._group_slices(cats(3), colors)
+    assert [name for name, _, _ in slices] == ["G1", "G2", "G3"]
+    assert [len(items) for _, items, _ in slices] == [2, 2, 2]
+    # G1 and G3 share a colour: G3 gets the next shade
+    assert slices[0][2].color() != slices[2][2].color()
+    assert slices[0][2].color().name() == "#e4b9b4"
+    uncategorized = CategoryTotal(None, UNCATEGORIZED_KEY, "", "", 5000)
+    slices = view._group_slices([uncategorized, *cats(12)], colors)
+    names = [name for name, _, _ in slices]
+    assert names[:9] == [f"G{g}" for g in range(1, 10)]
+    assert names[9:] == ["Others (3)", "Uncategorized"]
+    assert len(slices[9][1]) == 6
+
+
 # --- mortgage --------------------------------------------------------------------------
 
 
@@ -534,7 +615,7 @@ def test_mortgage_progress(imported) -> None:
 
 
 def test_mortgage_page(qtbot, imported) -> None:
-    from hiro_budget.gui.report_pages import MortgageReport
+    from hiro_budget.gui.reports import MortgageReport
 
     page = MortgageReport(imported)
     qtbot.addWidget(page)
@@ -544,6 +625,93 @@ def test_mortgage_page(qtbot, imported) -> None:
     assert page.view.chart().series()
     page.refresh(date(2020, 1, 1), date(2020, 2, 1), None)
     assert page.table.rowCount() == 0 and page.note.text()
+
+
+# --- mortgage forecast (#47) -----------------------------------------------------------
+
+
+def _loan(months: int = 6, debt: int = 100_000_00, rate: float = 0.03, payment: int = 1_000_00):
+    """A loan paid with a constant annuity: the months as the report has them."""
+    from hiro_budget.services.mortgage_report import MonthPayments, Mortgage
+
+    data = Mortgage(["Kredit"])
+    for i in range(months):
+        interest = round(debt * rate / 12)
+        principal = payment - interest
+        debt -= principal
+        data.months.append(MonthPayments(f"2026-{i + 1:02d}", interest, principal, 0, debt))
+    return data
+
+
+def test_forecast_matches_the_annuity_formula() -> None:
+    import math
+
+    from hiro_budget.services import mortgage_report as mr
+
+    data = _loan()
+    f = mr.forecast(data)
+    assert f.start == "2026-06" and f.payment == 1_000_00
+    assert f.rate == pytest.approx(0.03, abs=1e-5)
+    debt, r = data.months[-1].debt, 0.03 / 12
+    n = -math.log(1 - r * debt / f.payment) / math.log(1 + r)  # months to pay it off
+    assert len(f.months) == math.ceil(n)
+    assert f.months[-1][1] == 0 and f.payoff == f.months[-1][0]
+    paid = f.payment * (len(f.months) - 1) + (f.months[-2][1] + round(f.months[-2][1] * r))
+    assert f.interest == pytest.approx(paid - debt, abs=len(f.months))  # rounding per month
+
+
+def test_forecast_with_special_repayments_and_fixed_rate_end() -> None:
+    from hiro_budget.services import mortgage_report as mr
+
+    data = _loan()
+    base = mr.forecast(data, 0, date(2030, 12, 31))
+    extra = mr.forecast(data, 5_000_00, date(2030, 12, 31))
+    assert len(extra.months) < len(base.months) and extra.interest < base.interest
+    assert dict(base.months)["2030-12"] == base.debt_at_fixed_end
+    assert extra.debt_at_fixed_end < base.debt_at_fixed_end
+    # December only: the debt drops by the extra on top of the instalment's principal
+    dec, nov = dict(extra.months)["2026-12"], dict(extra.months)["2026-11"]
+    assert nov - dec > 5_000_00
+
+
+def test_forecast_needs_an_instalment_that_covers_the_interest() -> None:
+    from hiro_budget.services import mortgage_report as mr
+    from hiro_budget.services.mortgage_report import MonthPayments, Mortgage
+
+    assert mr.forecast(Mortgage(["Kredit"])) is None
+    # 1 € principal at 100.000 € debt: not paid off within the limit
+    slow = mr.forecast(Mortgage(["K"], [MonthPayments("2026-01", 300_00, 1_00, 0, 100_000_00)]))
+    assert slow.payoff is None and len(slow.months) == mr.FORECAST_MAX_MONTHS
+    # a month with two instalments (booked at the turn of the month) is not the usual one
+    data = _loan(6)
+    data.months[-1].interest *= 2
+    data.months[-1].principal *= 2
+    assert mr.forecast(data).payment == 1_000_00
+
+
+def test_mortgage_page_shows_the_forecast(qtbot, imported) -> None:
+    from hiro_budget.db.models import Account
+    from hiro_budget.gui.reports import MortgageReport
+
+    with imported.session() as s:  # the debt is known from the loan's opening balance
+        loan = s.get(Account, account_id(s, "ING Baufinanzierung"))
+        loan.opening_balance_cents, loan.opening_date = -100_000_00, date(2026, 1, 1)
+        s.commit()
+    page = MortgageReport(imported)
+    qtbot.addWidget(page)
+    page.refresh(date(2026, 1, 1), date(2026, 4, 30), None)
+    assert page.forecast is not None and page.forecast.payoff
+    names = [s.name() for s in page.debt_view.chart().series()]
+    assert "Forecast" in names
+    assert "Forecast from the instalment" in page.note.text()
+    months = len(page.forecast.months)
+    page.extra.setValue(2000)
+    assert len(page.forecast.months) < months
+    assert "special repayment every December" in page.note.text()
+    assert imported.ui_state.get("reports.mortgage_extra") == 2000
+    again = MortgageReport(imported)
+    qtbot.addWidget(again)
+    assert again.extra.value() == 2000  # remembered
 
 
 # --- depot -----------------------------------------------------------------------------
@@ -595,7 +763,7 @@ def test_depot_history(depot_app) -> None:
 
 
 def test_depot_page(qtbot, depot_app) -> None:
-    from hiro_budget.gui.report_pages import DepotReport
+    from hiro_budget.gui.reports import DepotReport
 
     page = DepotReport(depot_app)
     qtbot.addWidget(page)
@@ -635,7 +803,7 @@ def test_top_payees(imported) -> None:
 
 def test_payee_double_click_shows_its_bookings(qtbot, imported) -> None:
     from hiro_budget.gui.main_window import MainWindow
-    from hiro_budget.gui.report_pages import TopPayeesReport
+    from hiro_budget.gui.reports import TopPayeesReport
 
     window = MainWindow(imported)
     qtbot.addWidget(window)
@@ -647,3 +815,52 @@ def test_payee_double_click_shows_its_bookings(qtbot, imported) -> None:
     assert window.tabs.currentWidget() is view
     assert view.search.text() == page.data[0].name
     assert view.current_filter().date_from == date(2026, 3, 1)
+
+
+def test_payee_bar_labels_in_money_format(qtbot, imported) -> None:
+    # #35: QtCharts' "@value" read "2797.81"
+    from hiro_budget.gui.common import money
+    from hiro_budget.gui.main_window import MainWindow
+    from hiro_budget.gui.reports import TopPayeesReport
+
+    window = MainWindow(imported)
+    qtbot.addWidget(window)
+    page = next(p for p in window.reports.pages if isinstance(p, TopPayeesReport))
+    page.refresh(date(2026, 3, 1), date(2026, 3, 31), None)
+    texts = [item.text() for item in page.bar_labels]
+    largest_first = list(reversed(texts))
+    assert largest_first == [money(p.expense_cents) for p in page.data[: len(texts)]]
+    assert all("€" in t for t in texts)
+
+
+def test_partial_month(imported) -> None:
+    # #32: the last month of the period with data for only part of it
+    from hiro_budget.services import reports
+
+    with imported.session() as s:
+        _, last = reports.booking_date_range(s)
+        assert reports.partial_month(s, date(2026, 3, 31)) is None or last < date(2026, 3, 31)
+        # the period ends in the middle of a month
+        assert reports.partial_month(s, date(2026, 3, 15)) == ("2026-03", date(2026, 3, 15))
+        # the period goes beyond the data: the month of the last booking is cut
+        if last != reports.month_end(last):
+            assert reports.partial_month(s, date(2026, 12, 31)) == (f"{last:%Y-%m}", last)
+
+
+def test_partial_month_has_no_rolling_rate_and_is_marked(qtbot, imported) -> None:
+    from hiro_budget.gui.reports import SavingsRateReport
+    from hiro_budget.services import savings
+
+    with imported.session() as s:
+        data = savings.savings_rates(s, date(2026, 1, 1), date(2026, 3, 15))
+    assert data.partial == ("2026-03", date(2026, 3, 15))
+    assert data.months[-1].rolling_rate is None
+    page = SavingsRateReport(imported)
+    qtbot.addWidget(page)
+    page.refresh(date(2026, 1, 1), date(2026, 3, 15), None)
+    bars = page.view.chart().series()[0]
+    last = len(data.months) - 1
+    assert all(bar_set.selectedBars() == [last] for bar_set in bars.barSets())  # lighter
+    assert "15.03." in page.table.item(last, 0).text()
+    axis = page.view.chart().axes()[0]
+    assert "15.03." in axis.categories()[-1]

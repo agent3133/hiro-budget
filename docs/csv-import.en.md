@@ -91,7 +91,7 @@ section 7) and change it. A complete example, `config/plugins/musterbank_csv/`:
 ```yaml
 name: musterbank_csv                      # = the folder name: lower case, digits, _
 version: 1.0.0
-api: 1
+api: 2
 description: Musterbank, Umsätze as CSV
 formats: [format.csv.yaml]
 ```

@@ -17,8 +17,8 @@ from collections import defaultdict
 from dataclasses import dataclass, field
 from datetime import date
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import and_, or_, select
+from sqlalchemy.orm import Session
 
 from hiro_budget.config import Settings
 from hiro_budget.db.models import Account, AccountKind, Category, Split, Transaction
@@ -74,26 +74,38 @@ def mortgage_progress(
     interest_ids = set(session.scalars(select(Category.id).where(Category.key.in_(interest_keys))))
 
     payments: dict[str, MonthPayments] = {}
+    # only the splits that pay on a loan or its interest, as plain columns (#60: all splits
+    # of all other accounts as ORM objects took 0.5 s for ten years)
     q = (
-        select(Split)
+        select(
+            Transaction.booking_date,
+            Split.transfer_account_id,
+            Split.category_id,
+            Split.memo,
+            Split.amount_cents,
+        )
         .join(Transaction, Split.transaction_id == Transaction.id)
-        .options(selectinload(Split.transaction))
         .where(
             Transaction.booking_date >= start,
             Transaction.booking_date <= end,
             Transaction.account_id.not_in(loan_ids),
+            or_(
+                Split.transfer_account_id.in_(loan_ids),
+                and_(Split.category_id.in_(interest_ids), Split.transfer_account_id.is_(None)),
+            ),
         )
+        .order_by(Split.id)
     )
-    for s in session.scalars(q):
-        month = f"{s.transaction.booking_date:%Y-%m}"
-        if s.transfer_account_id in loan_ids:
+    for booking_date, target, category_id, memo, amount in session.execute(q):
+        month = f"{booking_date:%Y-%m}"
+        if target in loan_ids:
             p = payments.setdefault(month, MonthPayments(month))
-            if s.memo == "Tilgung":  # principal of an instalment (mortgage rule)
-                p.principal -= s.amount_cents
+            if memo == "Tilgung":  # principal of an instalment (mortgage rule)
+                p.principal -= amount
             else:
-                p.extra -= s.amount_cents
-        elif s.category_id in interest_ids and s.transfer_account_id is None:
-            payments.setdefault(month, MonthPayments(month)).interest -= s.amount_cents
+                p.extra -= amount
+        elif category_id in interest_ids and target is None:
+            payments.setdefault(month, MonthPayments(month)).interest -= amount
 
     debts: dict[str, int] = defaultdict(int)
     known: set[str] = set()
@@ -110,4 +122,86 @@ def mortgage_progress(
         p = payments.get(m, MonthPayments(m))
         p.debt = debts[m] if m in known else None
         result.months.append(p)
+    return result
+
+
+# --- forecast (#47) ---------------------------------------------------------------------
+
+FORECAST_MAX_MONTHS = 720  # 60 years: an instalment that never pays the loan off stops here
+INSTALMENT_MONTHS = 6  # the usual instalment: the most frequent one of these last months
+EXTRA_MONTH = 12  # a yearly special repayment is made in December
+
+
+@dataclass
+class Forecast:
+    """The loan paid on with the latest instalment (interest rate and amount stay), and
+    optionally a special repayment every December."""
+
+    start: str  # month of the instalment the forecast starts from
+    payment: int  # monthly instalment, interest + principal (cents)
+    rate: float  # nominal interest rate per year (0.021 = 2.1 %)
+    extra_per_year: int  # special repayment each December (cents)
+    months: list[tuple[str, int]] = field(default_factory=list)  # month, debt at its end
+    interest: int = 0  # interest still to pay until paid off
+    fixed_until: str | None = None  # end of the fixed-rate period ("YYYY-MM")
+    debt_at_fixed_end: int | None = None
+
+    @property
+    def payoff(self) -> str | None:
+        """The month of the last instalment, None when not paid off within the limit."""
+        return self.months[-1][0] if self.months and self.months[-1][1] == 0 else None
+
+
+def _next_month(month: str) -> str:
+    y, m = int(month[:4]), int(month[5:])
+    return f"{y + m // 12}-{m % 12 + 1:02d}"
+
+
+def forecast(
+    data: Mortgage, extra_per_year: int = 0, fixed_until: date | None = None
+) -> Forecast | None:
+    """From the latest regular instalment: the usual amount of the last months (a month
+    with two instalments or none, booked at a turn of the month, does not count), its
+    interest over the debt before it as the rate. None without such an instalment, or
+    when the instalment does not even cover the interest."""
+    regular = [
+        (i, m)
+        for i, m in enumerate(data.months)
+        if m.interest > 0 and m.principal > 0 and m.debt is not None
+    ]
+    recent = [m.interest + m.principal for _, m in regular[-INSTALMENT_MONTHS:]]
+    if not recent:
+        return None
+    payment = max(set(recent), key=lambda v: (recent.count(v), -recent[::-1].index(v)))
+    i, last = next((i, m) for i, m in reversed(regular) if m.interest + m.principal == payment)
+    assert last.debt is not None  # regular months have a debt
+    before = data.months[i - 1].debt if i else None
+    if before is None:
+        before = last.debt + last.principal + last.extra
+    if before <= 0:
+        return None
+    monthly = last.interest / before
+    result = Forecast(
+        last.month,
+        payment,
+        monthly * 12,
+        extra_per_year,
+        fixed_until=f"{fixed_until:%Y-%m}" if fixed_until else None,
+    )
+    debt, month = last.debt, last.month
+    if result.fixed_until is not None and result.fixed_until <= month:
+        result.debt_at_fixed_end = None  # already over
+    while debt > 0 and len(result.months) < FORECAST_MAX_MONTHS:
+        month = _next_month(month)
+        interest = round(debt * monthly)
+        principal = min(payment - interest, debt)
+        if principal <= 0:
+            return None  # the instalment does not cover the interest
+        debt -= principal
+        result.interest += interest
+        if extra_per_year and int(month[5:]) == EXTRA_MONTH and debt > 0:
+            debt -= min(extra_per_year, debt)
+        result.months.append((month, debt))
+        if month == result.fixed_until:
+            result.debt_at_fixed_end = debt
     return result

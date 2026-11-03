@@ -10,12 +10,12 @@ import logging
 from collections import Counter
 from dataclasses import dataclass, field
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, selectinload
 
 from hiro_budget.config import Settings
 from hiro_budget.db.models import Account, Category, Split, SplitSource, Transaction
-from hiro_budget.services.categorization.classifier import Classifier, features
+from hiro_budget.services.categorization.classifier import Classifier, feature_text, features
 from hiro_budget.services.categorization.mortgage import MortgageMatcher, extract_split
 from hiro_budget.services.categorization.rules import compile_rules, first_match
 from hiro_budget.services.categorization.transfers import (
@@ -36,6 +36,19 @@ class CategorizationStats:
     def __str__(self) -> str:
         parts = ", ".join(f"{k}: {v}" for k, v in sorted(self.counts.items()))
         return parts or "nothing to do"
+
+
+def _split_key(s: Split) -> tuple:
+    category = s.category.id if s.category is not None else s.category_id
+    target = s.transfer_account.id if s.transfer_account is not None else s.transfer_account_id
+    return (s.amount_cents, category, target, s.source, s.memo, s.rule_id, s.confidence)
+
+
+def _set_splits(tx: Transaction, splits: list[Split]) -> None:
+    """Replace the splits of ``tx`` only if they differ: recategorizing ten years of
+    bookings rewrote all of them (5,400 deletes and inserts) though few change (#54)."""
+    if [_split_key(s) for s in tx.splits] != [_split_key(s) for s in splits]:
+        tx.splits[:] = splits
 
 
 class Categorizer:
@@ -151,7 +164,7 @@ class Categorizer:
             if splits is None:
                 pending.append(tx)
             else:
-                tx.splits[:] = splits
+                _set_splits(tx, splits)
 
         predictions = (
             self.classifier.predict([features(t) for t in pending])
@@ -163,19 +176,22 @@ class Categorizer:
             pred = predictions[i] if predictions else None
             if pred and pred.confidence >= threshold and pred.category_key in self.categories:
                 stats.counts["ml"] += 1
-                tx.splits[:] = [
-                    Split(
-                        amount_cents=tx.amount_cents,
-                        category=self.categories[pred.category_key],
-                        source=SplitSource.ML,
-                        confidence=round(pred.confidence, 3),
-                    )
-                ]
+                _set_splits(
+                    tx,
+                    [
+                        Split(
+                            amount_cents=tx.amount_cents,
+                            category=self.categories[pred.category_key],
+                            source=SplitSource.ML,
+                            confidence=round(pred.confidence, 3),
+                        )
+                    ],
+                )
             else:
                 stats.counts["uncategorized"] += 1
-                tx.splits[:] = [
-                    Split(amount_cents=tx.amount_cents, source=SplitSource.UNCATEGORIZED)
-                ]
+                _set_splits(
+                    tx, [Split(amount_cents=tx.amount_cents, source=SplitSource.UNCATEGORIZED)]
+                )
         sync_counterparts(self.session, transactions, self.settings.app.matching.days)
         for w in stats.warnings:
             log.warning(w)
@@ -192,23 +208,46 @@ def load_transactions(session: Session, ids: list[int] | None = None) -> list[Tr
 
 
 def training_samples(session: Session) -> list[tuple[str, str]]:
-    """Bookings with exactly one manually or rule-assigned category split."""
-    samples = []
-    for tx in load_transactions(session):
-        if len(tx.splits) != 1:
-            continue
-        s = tx.splits[0]
-        if s.category is None or s.source not in (SplitSource.MANUAL, SplitSource.RULE):
-            continue
-        samples.append((features(tx), s.category.key))
-    return samples
+    """Bookings with exactly one manually or rule-assigned category split.
+
+    Plain columns, no ORM entities: a whole history of bookings in a few ms (#55)."""
+    single = (
+        select(Split.transaction_id)
+        .group_by(Split.transaction_id)
+        .having(func.count(Split.id) == 1)
+        .scalar_subquery()
+    )
+    rows = session.execute(
+        select(
+            Transaction.amount_cents,
+            Transaction.merchant,
+            Transaction.counterparty,
+            Transaction.booking_type,
+            Transaction.purpose,
+            Transaction.details,
+            Category.key,
+        )
+        .join(Split, Split.transaction_id == Transaction.id)
+        .join(Category, Category.id == Split.category_id)
+        .where(
+            Transaction.id.in_(single),
+            Split.source.in_((SplitSource.MANUAL, SplitSource.RULE)),
+        )
+        .order_by(Transaction.booking_date, Transaction.id)
+    )
+    return [(feature_text(*row[:6]), row[6]) for row in rows]
 
 
-def train_classifier(session: Session, settings: Settings) -> Classifier | None:
-    clf = Classifier.train(training_samples(session), settings.app.ml.min_samples)
+def fit_and_save(samples: list[tuple[str, str]], settings: Settings) -> Classifier | None:
+    """The part of training without the database: may run in a worker thread."""
+    clf = Classifier.train(samples, settings.app.ml.min_samples)
     if clf is not None:
         clf.save(settings.model_path)
     return clf
+
+
+def train_classifier(session: Session, settings: Settings) -> Classifier | None:
+    return fit_and_save(training_samples(session), settings)
 
 
 def recategorize_all(session: Session, settings: Settings) -> CategorizationStats:

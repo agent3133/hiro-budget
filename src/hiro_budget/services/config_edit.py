@@ -8,15 +8,18 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any
 
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from hiro_budget.config import (
     AppConfig,
+    BankAccessConfig,
     CategoriesConfig,
     ConfigError,
-    FintsConfig,
     OwnAccount,
     RuleDef,
     RulesConfig,
@@ -25,20 +28,119 @@ from hiro_budget.config import (
     load_yaml,
     save_yaml,
 )
-from hiro_budget.services.categorization.pipeline import load_transactions
-from hiro_budget.services.categorization.rules import CompiledRule
+from hiro_budget.db.models import Account, Split, Transaction
+from hiro_budget.services.categorization.rules import TEXT_FIELDS, CompiledRule
+
+
+@dataclass(frozen=True)
+class _AccountName:
+    name: str
+
+
+@dataclass(frozen=True)
+class RuleSample:
+    """What a rule looks at in a booking, without the ORM (kept while the rules page is
+    open: counting all rules again after an edit only matches, it does not load)."""
+
+    id: int
+    counterparty: str | None
+    merchant: str | None
+    purpose: str | None
+    booking_type: str | None
+    details: str | None
+    amount_cents: int
+    account: _AccountName | None
+    uncategorized: bool
+
+
+@dataclass
+class RuleHits:
+    """Bookings a rule matches, and how many of them it categorizes: the first matching
+    rule wins, so a rule below another one can match bookings and still get none."""
+
+    matching: int = 0
+    effective: int = 0
+    uncategorized: int = 0  # of the matching ones, currently without a category
+    ids: list[int] = field(default_factory=list)  # the matching bookings
+
+    @property
+    def taken(self) -> int:
+        """Matching bookings an earlier rule takes."""
+        return self.matching - self.effective
+
+
+def rule_samples(session: Session) -> list[RuleSample]:
+    """All bookings as rules see them, oldest first: plain columns, the uncategorized flag
+    as EXISTS in SQL (it was one lazy load of ``split.category`` per booking, #57)."""
+    names = {a.id: _AccountName(a.name) for a in session.execute(select(Account.id, Account.name))}
+    uncategorized = exists().where(
+        Split.transaction_id == Transaction.id,
+        Split.category_id.is_(None),
+        Split.transfer_account_id.is_(None),
+    )
+    rows = session.execute(
+        select(
+            Transaction.id,
+            Transaction.counterparty,
+            Transaction.merchant,
+            Transaction.purpose,
+            Transaction.booking_type,
+            Transaction.details,
+            Transaction.amount_cents,
+            Transaction.account_id,
+            uncategorized,
+        ).order_by(Transaction.booking_date, Transaction.id)
+    )
+    return [RuleSample(*r[:7], names.get(r[7]), bool(r[8])) for r in rows]
+
+
+def rule_hits(samples: list[RuleSample], rules: list[RuleDef | None]) -> list[RuleHits]:
+    """Hits per rule, in the given order (None, e.g. an invalid draft: no hits).
+
+    Rule by rule over columns: each pattern only sees the bookings the rule's earlier
+    conditions left, and each distinct text once (most counterparties and booking types
+    repeat): the same hits as matching every booking against every rule, in a fraction of
+    the ``re.search`` calls (#57)."""
+    compiled = [CompiledRule.compile(r) if r is not None else None for r in rules]
+    columns = {name: [getattr(s, name) or "" for s in samples] for name in TEXT_FIELDS}
+    columns["account"] = [s.account.name if s.account else "" for s in samples]
+    amounts = [s.amount_cents for s in samples]
+    taken = [False] * len(samples)
+    hits = []
+    for rule in compiled:
+        h = RuleHits()
+        hits.append(h)
+        if rule is None:
+            continue
+        lo, hi = rule.amount_min, rule.amount_max
+        rows = [
+            i for i, a in enumerate(amounts) if (lo is None or a >= lo) and (hi is None or a <= hi)
+        ]
+        for name, rx in rule.patterns.items():
+            column, seen = columns[name], dict[str, bool]()
+            kept = []
+            for i in rows:
+                value = column[i]
+                found = seen.get(value)
+                if found is None:
+                    found = seen[value] = rx.search(value) is not None
+                if found:
+                    kept.append(i)
+            rows = kept
+        h.matching = len(rows)
+        for i in rows:
+            h.ids.append(samples[i].id)
+            h.uncategorized += samples[i].uncategorized
+            if not taken[i]:  # the first matching rule categorizes it
+                taken[i] = True
+                h.effective += 1
+    return hits
 
 
 def rule_match_count(session: Session, rule: RuleDef) -> tuple[int, int]:
     """How many bookings the rule matches: (total, currently uncategorized)."""
-    compiled = CompiledRule.compile(rule)
-    total = uncategorized = 0
-    for tx in load_transactions(session):
-        if compiled.matches(tx):
-            total += 1
-            if any(s.is_uncategorized for s in tx.splits):
-                uncategorized += 1
-    return total, uncategorized
+    (h,) = rule_hits(rule_samples(session), [rule])
+    return h.matching, h.uncategorized
 
 
 def _flow_map(data: dict) -> CommentedMap:
@@ -64,7 +166,7 @@ def save_rules(settings: Settings, rules: list[RuleDef]) -> None:
 
 
 def _target_map(target: TargetDef) -> CommentedMap:
-    data = {"type": target.type, "amount": target.amount}
+    data: dict[str, Any] = {"type": target.type, "amount": target.amount}
     if target.date is not None:
         data["date"] = target.date
     if target.type == "repeating":
@@ -195,7 +297,7 @@ def save_accounts(
     for m in mortgages:
         if m.get("loan_account") in renames:
             m["loan_account"] = renames[m["loan_account"]]
-    for login in (doc.get("fints") or {}).get("logins") or []:
+    for login in (doc.get("bank_access") or {}).get("logins") or []:
         for link in login.get("accounts") or []:
             if link.get("account") in renames:
                 link["account"] = renames[link["account"]]
@@ -217,6 +319,8 @@ def save_accounts(
             m["on_budget"] = a.on_budget
         if a.transfer_category:
             m["transfer_category"] = a.transfer_category
+        if not a.stale_hint:
+            m["stale_hint"] = False
         seq.append(m)
     doc["own_accounts"] = seq
     # Validate the complete result (e.g. mortgage loan accounts must still exist).
@@ -242,20 +346,51 @@ def save_plugins(settings: Settings, enabled: list[str]) -> None:
     settings.app = new_app
 
 
-def save_fints(settings: Settings, fints: FintsConfig) -> None:
-    """Write the bank logins (``fints``) to config.yaml. PINs are never part of them."""
+def save_data_folder(settings: Settings, folder: Path | None) -> None:
+    """Write ``data_folder`` (#29); None removes it (the folder of database.path again).
+    Absolute ``database.path`` / ``ml.model_path`` become plain file names in the folder."""
     doc = load_yaml(settings.config_file)
+    if folder is None:
+        doc.pop("data_folder", None)
+    else:
+        if "data_folder" not in doc:  # new key near the top, after the comment block
+            doc.insert(0, "data_folder", folder.as_posix())
+        else:
+            doc["data_folder"] = folder.as_posix()
+        for section, key, path in (
+            ("database", "path", settings.db_path),
+            ("ml", "model_path", settings.model_path),
+        ):
+            sub = doc.get(section)
+            if sub is not None and key in sub and Path(str(sub[key])).is_absolute():
+                sub[key] = path.name
+    try:
+        new_app = AppConfig.model_validate(doc)
+    except Exception as e:
+        raise ConfigError(str(e)) from e
+    save_yaml(settings.config_file, doc)
+    settings.app = new_app
+
+
+def _bank_access_section(access: BankAccessConfig) -> CommentedMap:
     section = CommentedMap()
-    if fints.product_id:
-        section["product_id"] = fints.product_id
+    connectors = CommentedMap()
+    for name, options in access.connectors.items():
+        if values := {k: v for k, v in options.items() if v not in (None, "")}:
+            connectors[name] = _flow_map(values)
+    if connectors:
+        section["connectors"] = connectors
     logins = CommentedSeq()
-    for login in fints.logins:
-        m = CommentedMap(
-            name=login.name, bank_code=login.bank_code, server=login.server, login_id=login.login_id
-        )
+    for login in access.logins:
+        m = CommentedMap(connector=login.connector, name=login.name)
+        m["settings"] = _flow_map(dict(login.settings))
         accounts = CommentedSeq()
         for link in login.accounts:
-            a = {"bank_id": link.bank_id, "product": link.product, "kind": link.kind}
+            a: dict[str, Any] = {
+                "bank_id": link.bank_id,
+                "product": link.product,
+                "kind": link.kind,
+            }
             a["account"] = link.account
             if link.fetch_from is not None:
                 a["fetch_from"] = link.fetch_from
@@ -263,13 +398,37 @@ def save_fints(settings: Settings, fints: FintsConfig) -> None:
         m["accounts"] = accounts
         logins.append(m)
     section["logins"] = logins
-    doc["fints"] = section
+    return section
+
+
+def save_bank_access(settings: Settings, access: BankAccessConfig) -> None:
+    """Write the bank logins (``bank_access``) to config.yaml. Secrets (PINs) are never
+    part of them."""
+    doc = load_yaml(settings.config_file)
+    doc.pop("fints", None)  # the section up to 2026-11 (#82)
+    doc["bank_access"] = _bank_access_section(access)
     try:
         new_app = AppConfig.model_validate(doc)
     except Exception as e:
         raise ConfigError(str(e)) from e
     save_yaml(settings.config_file, doc)
     settings.app = new_app
+
+
+def migrate_bank_access(config_file: Path) -> bool:
+    """Rewrite a ``fints`` section (up to 2026-11) as ``bank_access`` (#82), in place of
+    it; True if the file changed."""
+    doc = load_yaml(config_file)
+    if "fints" not in doc:
+        return False
+    access = AppConfig.model_validate(doc).bank_access  # the validator converts it
+    keys = list(doc)
+    position = keys.index("fints")
+    doc.pop("fints")
+    if "bank_access" not in doc:
+        doc.insert(position, "bank_access", _bank_access_section(access))
+    save_yaml(config_file, doc)
+    return True
 
 
 def save_target(settings: Settings, category_key: str, target: TargetDef | None) -> None:

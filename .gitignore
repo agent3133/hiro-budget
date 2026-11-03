@@ -33,8 +33,12 @@ config/csv_formats.yaml.migrated*
 # user plugins (may hold personal formats)
 config/plugins/
 
-# Claude Code (worktrees of subagents, local settings)
-.claude/
+# Claude Code: worktrees of subagents, local settings; the project skills are kept
+.claude/*
+!.claude/skills/
+!.claude/hooks/
+!.claude/settings.json
 
 # local list of real values that must never be published (scripts/privacy_check.py)
 .privacy-denylist
+.mypy_cache/

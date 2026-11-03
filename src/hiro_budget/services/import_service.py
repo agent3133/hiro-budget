@@ -1,4 +1,11 @@
-"""Two-phase statement import: ``preview`` (parse + duplicate check) then ``commit``."""
+"""Two-phase statement import: ``preview`` (parse + duplicate check) then ``commit``.
+
+Every source goes through here (#82): a statement file (``preview``) and what a connector
+fetched from a bank (``preview_fetched``, an ``incremental`` statement: bookings already
+stored are skipped, bookings a statement delivered after the cut-over are replaced, and
+the bank's balance becomes the closing balance). ``services.connections`` drives the
+fetches.
+"""
 
 from __future__ import annotations
 
@@ -6,6 +13,7 @@ import enum
 import hashlib
 import logging
 import re
+import uuid
 from collections import Counter
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, timedelta
@@ -26,7 +34,7 @@ from hiro_budget.db.models import (
     Transaction,
 )
 from hiro_budget.importers.base import (
-    Importer,
+    FileImporter,
     ParsedLink,
     ParsedStatement,
     ParsedTransaction,
@@ -153,7 +161,7 @@ class OverlapError(Exception):
 
 @dataclass
 class ImportPreview:
-    path: Path
+    path: Path | None  # the statement file; None: fetched by a connector
     sha256: str
     statement: ParsedStatement
     account_name: str
@@ -175,6 +183,15 @@ class ImportPreview:
     # payments a bank booking paid for (PayPal): stored as links, not as bookings
     links_new: list[ParsedLink] = field(default_factory=list)
     links_known: int = 0  # already stored by an earlier import
+    # the source's name in the import history (default: the file name)
+    source: str = ""
+    # fetched: bookings a statement delivered from this day on are replaced (the cut-over)
+    replace_since: date | None = None
+    first_import: bool = False  # fetched: the account has no import yet
+
+    @property
+    def source_name(self) -> str:
+        return self.source or (self.path.name if self.path is not None else "")
 
     @property
     def new_count(self) -> int:
@@ -186,11 +203,15 @@ class ImportPreview:
 
     @property
     def can_commit(self) -> bool:
+        if self.statement.incremental:
+            # nothing new: no entry in the import history, except the account's first (its
+            # balance)
+            return not self.errors and (self.new_count > 0 or self.first_import)
         # With an overlap, overwriting is possible even if every booking is already stored.
         # Everything left out (FinTS has it): the file is still recorded as imported.
         return not self.errors and (
             self.new_count > 0
-            or self.links_new
+            or bool(self.links_new)
             or self.overlap is not None
             or self.statement.valuation
             or self.skipped_fetched > 0
@@ -199,7 +220,7 @@ class ImportPreview:
 
 @dataclass
 class ImportResult:
-    path: Path
+    path: Path | None
     batch_id: int
     added: int
     duplicates: int
@@ -209,6 +230,8 @@ class ImportResult:
     holdings: int = 0  # positions of an imported valuation
     links: int = 0  # payments stored as links to bank bookings
     linking: LinkResult = field(default_factory=LinkResult)  # waiting payments, all imports
+    # the new bookings (for a caller that categorizes several imports at once)
+    transactions: list[Transaction] = field(default_factory=list)
 
 
 def _find_account(session: Session, stmt: ParsedStatement) -> Account | None:
@@ -229,15 +252,16 @@ def _stored_by_date_amount(
     """Duplicate flags that also count a stored booking with the same date and amount
     (imported from another source, e.g. a PDF whose texts differ); each stored booking
     counts once."""
-    stored = Counter(
-        session.execute(
+    stored: Counter[tuple[date, int]] = Counter(
+        (day, cents)
+        for day, cents in session.execute(
             select(Transaction.booking_date, Transaction.amount_cents).where(
                 Transaction.account_id == account.id,
                 Transaction.batch_id.is_not(None),
                 Transaction.booking_date >= min(t.booking_date for t in transactions),
                 Transaction.booking_date <= max(t.booking_date for t in transactions),
             )
-        ).all()
+        )
     )
     flags = []
     for t, key in zip(transactions, keys, strict=True):
@@ -325,7 +349,7 @@ def _take_over_manual_entry(session: Session, tx: Transaction, entry: Transactio
     if tx.notes is None:
         tx.notes = entry.notes
     if not tx.splits:
-        if entry.is_counterpart:
+        if entry.counterpart_of is not None:
             # The entry was the counter-booking of a transfer: keep it a transfer.
             tx.splits = [
                 Split(
@@ -459,23 +483,13 @@ def _gaps_with_stored(
     return [g for g in statement_gaps([*stored, new]) if new is g.after or new is g.before]
 
 
-def plugin_importers(settings: Settings | None) -> list[Importer]:
-    """Importers of the plugins (user plugins first), then their CSV formats. Without
+def plugin_importers(settings: Settings | None) -> list[FileImporter]:
+    """File importers of the plugins (user plugins first), then their CSV formats. Without
     settings: the built-in plugins only."""
     from hiro_budget.importers import plugins
 
-    if settings is None:
-        reg = plugins.registry(None)
-        formats, own = reg.formats(), []
-    else:
-        reg = plugins.registry(settings.plugins_dir, settings.app.plugins.enabled)
-        formats, own = reg.formats(), settings.app.own_accounts
-    importers = reg.importers()
-    if formats:
-        from hiro_budget.importers.csv_import import CsvImporter
-
-        importers += [CsvImporter(f, own) for f in formats]
-    return importers
+    own = settings.app.own_accounts if settings is not None else []
+    return plugins.of(settings).file_importers(own)
 
 
 def preview(
@@ -488,8 +502,8 @@ def preview(
 ) -> ImportPreview:
     """Parse a statement and compare it with the stored bookings.
 
-    ``cutovers`` (account id -> first and last day, see ``bank.fetch.cutovers``): days
-    fetched per FinTS; the statement's bookings on these days are left out, and an
+    ``cutovers`` (account id -> first and last day, see ``connections.cutovers``): days
+    fetched by a connector; the statement's bookings on these days are left out, and an
     overwrite does not touch them. ``settings`` provide the configured CSV formats.
     """
     importer = find_importer(path, plugin_importers(settings))
@@ -588,6 +602,131 @@ def preview(
     return p
 
 
+def fetched_range(
+    session: Session, account_id: int, importer: str
+) -> tuple[date | None, date | None]:
+    """First and last day of the account's imports by ``importer`` (a connector)."""
+    first, last = session.execute(
+        select(func.min(ImportBatch.period_start), func.max(ImportBatch.period_end)).where(
+            ImportBatch.account_id == account_id, ImportBatch.importer == importer
+        )
+    ).one()
+    return first, last
+
+
+def _account_named(session: Session, name: str) -> Account | None:
+    return session.scalar(select(Account).where(Account.name == name))
+
+
+def preview_fetched(
+    session: Session,
+    stmt: ParsedStatement,
+    *,
+    fetch_from: date | None,
+    source: str,
+    now: datetime,
+) -> ImportPreview:
+    """Compare what a connector fetched with the stored bookings (``stmt.incremental``).
+
+    ``stmt.account_name`` is the app account it goes to (created on commit if missing),
+    ``fetch_from`` its cut-over: earlier bookings are left out (statements cover them), and
+    bookings a statement delivered from the cut-over on are replaced on commit. The bank's
+    balance becomes the closing balance, the opening balance follows from the bookings.
+    """
+    account = _account_named(session, stmt.account_name)
+    stmt.transactions = [
+        t for t in stmt.transactions if fetch_from is None or t.booking_date >= fetch_from
+    ]
+    if account is not None:
+        stmt.currency = account.currency or "EUR"
+    account_key = stmt.dedupe_scope or stmt.account_iban or stmt.account_name
+    keys = dedupe_keys(account_key, stmt.transactions)
+    stored = set(
+        session.scalars(select(Transaction.dedupe_key).where(Transaction.dedupe_key.in_(keys)))
+    )
+    first_import = account is None or not session.scalar(
+        select(func.count()).select_from(ImportBatch).where(ImportBatch.account_id == account.id)
+    )
+    # before this fetch's batch exists: the first day the connector covers
+    since = fetch_from
+    if since is None and account is not None:
+        since = fetched_range(session, account.id, stmt.importer)[0]
+    dates = [t.booking_date for t in stmt.transactions]
+    balance_date = stmt.period_end
+    stmt.period_start = stmt.period_start or min(dates, default=balance_date or now.date())
+    stmt.period_end = max([balance_date or now.date(), *dates])
+    stmt.statement_date = now.date()
+    closing = stmt.closing_balance_cents
+    stmt.opening_balance_cents = None if closing is None else closing - stmt.total_cents
+    return ImportPreview(
+        path=None,
+        sha256=hashlib.sha256(  # unique: every fetch is an import of its own
+            f"{stmt.importer}|{stmt.account_iban}|{now.isoformat()}|{uuid.uuid4()}".encode()
+        ).hexdigest(),
+        statement=stmt,
+        account_name=stmt.account_name,
+        account_exists=account is not None,
+        file_already_imported=False,
+        keys=keys,
+        duplicate_flags=[k in stored for k in keys],
+        source=source,
+        replace_since=since,
+        first_import=first_import,
+    )
+
+
+def _match_statement_bookings(
+    session: Session,
+    account: Account,
+    items: list[tuple[int, date, int]],
+    since: date,
+    importer: str,
+) -> dict[int, Transaction]:
+    """Pair fetched bookings with bookings a statement (any other importer) delivered from
+    ``since`` on.
+
+    ``items`` are ``(index, booking_date, amount_cents)``; a statement booking matches with
+    the same date and amount, each at most once.
+    """
+    if not items:
+        return {}
+    candidates: dict[tuple[date, int], list[Transaction]] = {}
+    for c in session.scalars(
+        select(Transaction)
+        .join(ImportBatch, Transaction.batch_id == ImportBatch.id)
+        .options(selectinload(Transaction.splits))
+        .where(
+            Transaction.account_id == account.id,
+            ImportBatch.importer != importer,
+            Transaction.booking_date >= since,
+        )
+        .order_by(Transaction.id)
+    ):
+        candidates.setdefault((c.booking_date, c.amount_cents), []).append(c)
+    result: dict[int, Transaction] = {}
+    for i, day, amount in items:
+        if same := candidates.get((day, amount)):
+            result[i] = same.pop(0)
+    return result
+
+
+def _replace_statement_booking(session: Session, tx: Transaction, old: Transaction) -> None:
+    """Carry a statement booking's manual categorization and note over, then delete it."""
+    tx.notes = old.notes
+    if old.is_manual:
+        tx.splits = [
+            Split(
+                amount_cents=s.amount_cents,
+                category_id=s.category_id,
+                transfer_account_id=s.transfer_account_id,
+                memo=s.memo,
+                source=SplitSource.MANUAL,
+            )
+            for s in old.splits
+        ]
+    session.delete(old)  # its counter-bookings go with it; categorization makes new ones
+
+
 def commit(
     session: Session,
     settings: Settings,
@@ -595,25 +734,32 @@ def commit(
     *,
     mode: OverlapMode | None = None,
     retrain: bool = True,
+    categorize: bool = True,
 ) -> ImportResult:
     """Persist a preview's bookings and categorize them. Caller commits the session.
 
     If the preview overlaps stored bookings, ``mode`` must say how to proceed:
     ``ADD`` imports only bookings not stored yet, ``OVERWRITE`` replaces the stored
-    bookings in the statement's range (manual work on identical bookings is kept).
+    bookings in the statement's range (manual work on identical bookings is kept). A
+    fetched (incremental) statement always adds. ``categorize=False``: the caller
+    categorizes ``ImportResult.transactions`` (several imports at once) and retrains.
     """
+    name = p.source_name
     if p.file_already_imported:
-        raise DuplicateFileError(f"{p.path.name} has already been imported")
+        raise DuplicateFileError(f"{name} has already been imported")
     if p.errors:
         raise BalanceError("; ".join(p.errors))
     if p.overlap is not None and mode is None:
         raise OverlapError(
-            f"{p.path.name} overlaps stored bookings "
+            f"{name} overlaps stored bookings "
             f"({p.overlap.date_from} - {p.overlap.date_to}); choose add or overwrite"
         )
     stmt = p.statement
 
-    account = _find_account(session, stmt)
+    if stmt.incremental:
+        account = _account_named(session, stmt.account_name)
+    else:
+        account = _find_account(session, stmt)
     if account is None:
         account = Account(
             name=stmt.account_name,
@@ -631,7 +777,7 @@ def commit(
     batch = ImportBatch(
         account=account,
         importer=stmt.importer,
-        source_file=p.path.name,
+        source_file=name,
         file_sha256=p.sha256,
         statement_no=stmt.statement_no,
         statement_date=stmt.statement_date,
@@ -645,8 +791,8 @@ def commit(
     if stmt.valuation:
         return _commit_valuation(session, p, account, batch)
 
-    overwrite = p.overlap is not None and mode == OverlapMode.OVERWRITE
-    replaced, saved = 0, {}
+    overwrite = p.overlap is not None and mode == OverlapMode.OVERWRITE and not stmt.incremental
+    replaced, saved = 0, dict[str, _ManualState]()
     if overwrite:
         replaced, saved = _remove_range(session, account, *statement_range(stmt), p.fetched_days)
 
@@ -660,6 +806,21 @@ def commit(
         ],
         settings.app.matching.days,
     )
+    # fetched: bookings a statement delivered after the cut-over (other texts, other keys)
+    replaces: dict[int, Transaction] = {}
+    if stmt.incremental and p.replace_since is not None:
+        replaces = _match_statement_bookings(
+            session,
+            account,
+            [
+                (i, stmt.transactions[i].booking_date, stmt.transactions[i].amount_cents)
+                for i in to_insert
+                if i not in matches
+            ],
+            p.replace_since,
+            stmt.importer,
+        )
+        replaced = len(replaces)
 
     new_txs: list[Transaction] = []
     for i in to_insert:
@@ -686,6 +847,8 @@ def commit(
         session.add(tx)
         if i in matches:
             _take_over_manual_entry(session, tx, matches[i])
+        elif i in replaces:
+            _replace_statement_booking(session, tx, replaces[i])
         new_txs.append(tx)
     for lk in p.links_new:
         session.add(
@@ -701,6 +864,26 @@ def commit(
             )
         )
     session.flush()
+    skipped = 0 if overwrite else p.duplicate_count
+    if not categorize:
+        log.info(
+            "%s: %d imported, %d skipped, %d replaced, %d manual entries matched",
+            name,
+            len(new_txs),
+            skipped,
+            replaced,
+            len(matches),
+        )
+        return ImportResult(
+            p.path,
+            batch.id,
+            len(new_txs),
+            skipped,
+            CategorizationStats(),
+            replaced,
+            matched=len(matches),
+            transactions=new_txs,
+        )
 
     stats = Categorizer(session, settings).categorize(new_txs)
     _resync_remaining_counterparts(session, account, settings)
@@ -708,11 +891,10 @@ def commit(
     linking = link_waiting(session, settings)
     if retrain and settings.app.ml.enabled:
         train_classifier(session, settings)
-    skipped = 0 if overwrite else p.duplicate_count
     log.info(
         "%s: %d imported, %d skipped, %d replaced, %d manual entries matched, "
         "%d payments via bank (%d linked, %d waiting); %s",
-        p.path.name,
+        name,
         len(new_txs),
         skipped,
         replaced,
@@ -732,6 +914,7 @@ def commit(
         matched=len(matches),
         links=len(p.links_new),
         linking=linking,
+        transactions=new_txs,
     )
 
 
@@ -789,7 +972,7 @@ def _commit_valuation(
     session.flush()
     log.info(
         "%s: valuation of %s on %s: %d positions, %.2f EUR%s",
-        p.path.name,
+        p.source_name,
         account.name,
         stmt.period_end,
         len(stmt.holdings),
@@ -804,7 +987,7 @@ def _commit_valuation(
 def import_file(
     session: Session, settings: Settings, path: Path, mode: OverlapMode | None = None
 ) -> ImportResult:
-    from hiro_budget.services.bank.fetch import cutovers
+    from hiro_budget.services.connections import cutovers
 
     p = preview(
         session,
@@ -834,7 +1017,7 @@ def categorization_preview(
                 if s.category is not None:
                     parts.append(s.category.name)
                 elif s.transfer_account is not None:
-                    parts.append(f"⇄ {s.transfer_account.name}")
+                    parts.append(f"↔ {s.transfer_account.name}")
             labels[tx.dedupe_key] = " + ".join(parts)
         return [
             None if dup else labels.get(k, "")

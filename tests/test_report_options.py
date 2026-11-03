@@ -260,8 +260,13 @@ def test_category_editor_report_month_column(qtbot, options_app) -> None:
 
 
 def category_bars(view) -> list[str]:
-    """The names of the slices in "Expenses by category"."""
-    return [name for name, _ in view._slices]
+    """The names of the category slices of all groups in the expenses donut."""
+    names = []
+    for group in sorted({c.group_id for c in view._cats if c.expense_cents > 0 and c.group_id}):
+        view.show_donut_group(group)
+        names += [name for name, _ in view._slices]
+    view.show_donut_group(None)
+    return names
 
 
 def test_reports_switch(qtbot, options_app) -> None:
@@ -287,7 +292,7 @@ def test_reports_switch(qtbot, options_app) -> None:
 
 
 def test_savings_page_shows_one_offs(qtbot, options_app) -> None:
-    from hiro_budget.gui.report_pages import BudgetActualReport, SavingsRateReport
+    from hiro_budget.gui.reports import BudgetActualReport, SavingsRateReport
 
     page = SavingsRateReport(options_app)
     qtbot.addWidget(page)
@@ -317,3 +322,32 @@ def test_export_marks_one_offs(options_app, tmp_path) -> None:
     keys, rows = export.categories_table(cats, "de")
     marked = {row[1]: row[keys.index("one_off")] for row in rows}
     assert marked["Instandhaltung & Baumarkt"] == "ja" and marked["Baufinanzierung"] == ""
+
+
+def test_category_names_are_not_cut(qtbot, options_app) -> None:
+    # #38: the name column was squeezed by the key and check box columns
+    from PySide6.QtGui import QFontMetrics
+
+    from hiro_budget.gui.config_view import CategoryEditor
+
+    editor = CategoryEditor(options_app)
+    qtbot.addWidget(editor)
+    editor.resize(492, 775)  # the categories side at 1600 × 950
+    editor.show()
+    qtbot.waitExposed(editor)
+    tree = editor.tree
+    assert not editor.save_button.isEnabled()  # fitting the column is no change
+    for i in range(tree.topLevelItemCount()):
+        group = tree.topLevelItem(i)
+        for j in range(group.childCount()):
+            item = group.child(j)
+            needed = 2 * tree.indentation() + QFontMetrics(item.font(0)).horizontalAdvance(
+                item.text(0)
+            )
+            assert tree.columnWidth(0) >= needed, item.text(0)
+            assert item.toolTip(1) == item.text(1)
+    # a renamed category widens the column
+    item = tree.topLevelItem(0).child(0)
+    before = tree.columnWidth(0)
+    item.setText(0, "A much, much longer category name than any other")
+    assert tree.columnWidth(0) > before

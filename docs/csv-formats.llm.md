@@ -155,7 +155,7 @@ plugin with the name of a built-in one replaces it.
 ```yaml
 name: musterbank_csv       # exactly the folder name
 version: 1.0.0
-api: 1
+api: 2
 description: Musterbank, Umsätze as CSV
 requires: [ing_common]     # only with enrich: ING
 formats: [format.csv.yaml]

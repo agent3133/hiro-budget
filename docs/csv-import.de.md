@@ -94,7 +94,7 @@ Abschnitt 7) und anpassen. Ein vollständiges Beispiel, `config/plugins/musterba
 ```yaml
 name: musterbank_csv                      # = der Ordnername: Kleinbuchstaben, Ziffern, _
 version: 1.0.0
-api: 1
+api: 2
 description: Musterbank, Umsätze als CSV
 formats: [format.csv.yaml]
 ```

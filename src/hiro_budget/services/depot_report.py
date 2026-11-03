@@ -60,13 +60,13 @@ def depot_history(session: Session, account_id: int, start: date, end: date) -> 
     for v in found:
         if statements:
             prev = statements[-1]
-            booked = session.scalar(
+            booked = session.execute(
                 select(func.coalesce(func.sum(Transaction.amount_cents), 0)).where(
                     Transaction.account_id == account_id,
                     Transaction.booking_date > prev.day,
                     Transaction.booking_date <= v.date,
                 )
-            )
+            ).scalar_one()
             invested = prev.invested + booked
         else:
             invested = v.total_cents

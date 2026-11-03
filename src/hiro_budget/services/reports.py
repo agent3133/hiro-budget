@@ -206,6 +206,24 @@ def booking_date_range(session: Session) -> tuple[date | None, date | None]:
     return first, last
 
 
+def month_end(day: date) -> date:
+    following = date(day.year + 1, 1, 1) if day.month == 12 else date(day.year, day.month + 1, 1)
+    return following - timedelta(days=1)
+
+
+def partial_month(session: Session, date_to: date) -> tuple[str, date] | None:
+    """The last month of a period ending ``date_to`` if it holds data for only part of
+    it: ("YYYY-MM", last day with data). The data ends at the period's end or at the
+    latest booking (the last statement imported), whichever is earlier."""
+    _, last = booking_date_range(session)
+    if last is None:
+        return None
+    end = min(date_to, last)
+    if end >= month_end(end):
+        return None
+    return f"{end:%Y-%m}", end
+
+
 @dataclass
 class YearRow:
     """Expenses of one category in two years."""
@@ -238,6 +256,7 @@ class YearComparison:
     # one-off income and expenses of both years (included above only with one_offs=True)
     one_off_income: tuple[int, int] = (0, 0)
     one_off_expenses: tuple[int, int] = (0, 0)
+    last_day: int | None = None  # and to this day of it (None: the month's end)
 
     @property
     def expenses(self) -> tuple[int, int]:
@@ -251,13 +270,17 @@ def year_comparison(
     last_month: int = 12,
     account_id: int | None = None,
     one_offs: bool = True,
+    last_day: int | None = None,
 ) -> YearComparison:
     """Expenses per category (and income) of two years, each from January to
-    ``last_month`` - so that a year still in progress can be compared fairly."""
+    ``last_month`` (to its day ``last_day``) - so that a year still in progress can be
+    compared fairly: both years cut at the same day."""
 
     def period(year: int) -> tuple[date, date]:
-        end = date(year + 1, 1, 1) if last_month == 12 else date(year, last_month + 1, 1)
-        return date(year, 1, 1), end - timedelta(days=1)
+        end = month_end(date(year, last_month, 1))
+        if last_day is not None:
+            end = end.replace(day=min(last_day, end.day))  # 29.02. in a common year: 28.
+        return date(year, 1, 1), end
 
     rows: dict[str, YearRow] = {}
     income, one_off_income, one_off_expenses = [], [], []
@@ -288,6 +311,7 @@ def year_comparison(
         (income[0], income[1]),
         (one_off_income[0], one_off_income[1]),
         (one_off_expenses[0], one_off_expenses[1]),
+        last_day,
     )
 
 
@@ -351,8 +375,8 @@ def top_payees(
     result = [
         PayeeTotal(
             key,
-            max(names[key], key=names[key].get),
-            max(categories[key], key=categories[key].get) if categories[key] else "",
+            max(names[key], key=names[key].__getitem__),
+            max(categories[key], key=categories[key].__getitem__) if categories[key] else "",
             cents,
             len(bookings[key]),
         )

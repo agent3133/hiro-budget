@@ -101,6 +101,12 @@ class Anchor:
         return iter((self.kind, self.date, self.base_cents))
 
 
+def _valuation_date(b: ImportBatch) -> date:
+    """A valuation's date: always set (the import refuses a valuation without one)."""
+    assert b.period_end is not None
+    return b.period_end
+
+
 def account_anchor(account: Account, batches: list[ImportBatch]) -> Anchor:
     """Starting point of an account's balance.
 
@@ -115,10 +121,13 @@ def account_anchor(account: Account, batches: list[ImportBatch]) -> Anchor:
         default=None,
     )
     if valuation is not None and (
-        account.opening_date is None or valuation.period_end >= account.opening_date
+        account.opening_date is None or _valuation_date(valuation) >= account.opening_date
     ):
+        assert valuation.closing_balance_cents is not None  # chosen for it
         return Anchor(
-            "valuation", valuation.period_end + timedelta(days=1), valuation.closing_balance_cents
+            "valuation",
+            _valuation_date(valuation) + timedelta(days=1),
+            valuation.closing_balance_cents,
         )
     if account.opening_balance_cents is not None and account.opening_date is not None:
         return Anchor("opening", account.opening_date, account.opening_balance_cents)
@@ -132,6 +141,7 @@ def account_anchor(account: Account, batches: list[ImportBatch]) -> Anchor:
         default=None,
     )
     if first is not None:
+        assert first.opening_balance_cents is not None  # chosen for it
         return Anchor("statement", first.period_start, first.opening_balance_cents)
     return Anchor("none", None, 0)
 
@@ -223,7 +233,7 @@ def valuations(session: Session, account_id: int) -> list[Valuation]:
     return [
         Valuation(
             batch_id=b.id,
-            date=b.period_end,
+            date=_valuation_date(b),
             source_file=b.source_file,
             total_cents=b.closing_balance_cents or 0,
             holdings=list(b.holdings),
@@ -284,7 +294,7 @@ def positions(session: Session, account_id: int) -> Positions | None:
         )
     )
     anchor = account_anchor(account, batches)
-    if anchor.kind != "valuation":
+    if anchor.kind != "valuation" or anchor.date is None:
         return None
     valuation = max(
         (b for b in batches if b.valuation and b.period_end == anchor.date - timedelta(days=1)),
@@ -323,7 +333,7 @@ def positions(session: Session, account_id: int) -> Positions | None:
     result = list(by_key.values())
     if other.statement_cents or other.trades:
         result.append(other)
-    return Positions(valuation.period_end, result)
+    return Positions(_valuation_date(valuation), result)
 
 
 class AccountError(ValueError):

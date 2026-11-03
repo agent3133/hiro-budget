@@ -31,6 +31,12 @@ def _month_start(d: date) -> date:
     return d.replace(day=1)
 
 
+def _add_months(d: date, n: int) -> date:
+    """The first day of the month n months after d's month."""
+    months = d.year * 12 + d.month - 1 + n
+    return date(months // 12, months % 12 + 1, 1)
+
+
 def _month_end(d: date) -> date:
     return (_month_start(d) + timedelta(days=32)).replace(day=1) - timedelta(days=1)
 
@@ -106,6 +112,21 @@ class DateRangeButton(QPushButton):
         self.popup.move(max(screen.left(), x), below.y())
         self.popup.show()
         self.date_from.setFocus()
+
+    def step(self, n: int) -> None:
+        """The period n steps earlier / later (Alt+PgUp / PgDn): whole months by their
+        number of months (a year by years), any other span by its number of days."""
+        first = from_qdate(self.date_from.date())
+        last = from_qdate(self.date_to.date())
+        if first == _month_start(first) and last == _month_end(last):
+            months = (last.year - first.year) * 12 + last.month - first.month + 1
+            new_first = _add_months(first, n * months)
+            new_last = _month_end(_add_months(_month_start(last), n * months))
+        else:
+            days = (last - first).days + 1
+            new_first = first + timedelta(days=n * days)
+            new_last = last + timedelta(days=n * days)
+        self._choose((new_first, new_last))
 
     def _choose(self, span: tuple[date, date] | None) -> None:
         """Set both dates, then filter once (each date field would filter on its own)."""

@@ -103,7 +103,7 @@ def test_misspelt_format_key_is_an_error(tmp_path):
     folder.mkdir(parents=True)
     (folder / "format.csv.yaml").write_text(text.replace("ING Umsatzanzeige", "My Bank"), "utf-8")
     (folder / "plugin.yaml").write_text(
-        "name: my_bank_csv\nversion: '1'\napi: 1\nformats: [format.csv.yaml]\n", "utf-8"
+        "name: my_bank_csv\nversion: '1'\napi: 2\nformats: [format.csv.yaml]\n", "utf-8"
     )
     reg = plugins.discover(tmp_path / "plugins")
     assert "My Bank" not in [f.name for f in reg.formats()]

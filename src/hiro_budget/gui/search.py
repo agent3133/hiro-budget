@@ -269,7 +269,8 @@ class SearchBox(QLineEdit):
     def focusOutEvent(self, event) -> None:
         super().focusOutEvent(event)
         # a click into the list arrives after the focus left the box
-        QTimer.singleShot(150, lambda: None if self.hasFocus() else self.close_results())
+        # with the box as context: no call after it is deleted (a window closed meanwhile)
+        QTimer.singleShot(150, self, lambda: None if self.hasFocus() else self.close_results())
 
     def eventFilter(self, obj, event) -> bool:
         if event.type() in (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.WindowDeactivate):

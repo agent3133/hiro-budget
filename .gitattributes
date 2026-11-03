@@ -3,3 +3,7 @@
 
 # Not part of the public repository (scripts/export_public.py uses git archive)
 CLAUDE.md export-ignore
+.claude export-ignore
+.githooks export-ignore
+scripts/* export-ignore
+tests/test_verify_publish.py export-ignore

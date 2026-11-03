@@ -29,12 +29,16 @@ class Col(IntEnum):
     AMOUNT = 5
     CATEGORY = 6
     SOURCE = 7
+    # shown after the amount while one account is filtered (#45); last in the model so
+    # that column widths saved before it existed still fit
+    BALANCE = 8
 
 
 class TransactionTableModel(QAbstractTableModel):
     def __init__(self, parent=None) -> None:
         super().__init__(parent)
         self._rows: list[TransactionRow] = []
+        self._balances: dict[int, int | None] = {}  # booking id -> account balance after it
         self._sort: tuple[int, Qt.SortOrder] | None = None  # column, order
         self._headers = {
             Col.DATE: self.tr("Date"),
@@ -45,6 +49,7 @@ class TransactionTableModel(QAbstractTableModel):
             Col.AMOUNT: self.tr("Amount"),
             Col.CATEGORY: self.tr("Category"),
             Col.SOURCE: self.tr("Source"),
+            Col.BALANCE: self.tr("Balance"),
         }
         # two lines per booking: payee over purpose, account over booking type
         self.two_lines = False
@@ -59,9 +64,13 @@ class TransactionTableModel(QAbstractTableModel):
 
     # -- data access ---------------------------------------------------------
 
-    def set_rows(self, rows: list[TransactionRow]) -> None:
+    def set_rows(
+        self, rows: list[TransactionRow], balances: dict[int, int | None] | None = None
+    ) -> None:
+        """The bookings; ``balances``: the account balance after each (one account)."""
         self.beginResetModel()
         self._rows = rows
+        self._balances = balances or {}
         if self._sort is not None:
             self._sort_rows()
         self.endResetModel()
@@ -88,6 +97,8 @@ class TransactionTableModel(QAbstractTableModel):
             key = lambda r: (r.booking_date.toordinal(), r.id)  # noqa: E731
         elif col == Col.AMOUNT:
             key = lambda r: r.amount_cents  # noqa: E731
+        elif col == Col.BALANCE:
+            key = lambda r: (self._balances.get(r.id) or 0, r.booking_date.toordinal(), r.id)  # noqa: E731
         else:
             key = lambda r: self.display(r, col).lower()  # noqa: E731
         self._rows.sort(key=key, reverse=order == Qt.SortOrder.DescendingOrder)
@@ -114,9 +125,9 @@ class TransactionTableModel(QAbstractTableModel):
         if s is None:
             return ""
         if s.transfer_account_name and s.category_name:
-            return f"{s.category_name} (⇄ {s.transfer_account_name})"
+            return f"{s.category_name} (↔ {s.transfer_account_name})"
         if s.transfer_account_name:
-            return f"⇄ {s.transfer_account_name}"
+            return f"↔ {s.transfer_account_name}"
         return s.category_name or ""
 
     def source_label(self, r: TransactionRow) -> str:
@@ -144,7 +155,7 @@ class TransactionTableModel(QAbstractTableModel):
             if s.category_name:
                 parts.append(f"{s.group_name}: {s.category_name}")
             if s.transfer_account_name:
-                parts.append(f"⇄ {s.transfer_account_name}")
+                parts.append(f"↔ {s.transfer_account_name}")
             if s.needs_category:
                 parts.append(self.tr("uncategorized"))
             target = " ".join(parts)
@@ -167,6 +178,9 @@ class TransactionTableModel(QAbstractTableModel):
             return money(r.amount_cents)
         if col == Col.CATEGORY:
             return self.category_label(r)
+        if col == Col.BALANCE:
+            balance = self._balances.get(r.id)
+            return money(balance) if balance is not None else ""
         return self.source_label(r)
 
     # -- Qt model API --------------------------------------------------------
@@ -201,7 +215,7 @@ class TransactionTableModel(QAbstractTableModel):
             return r
         if role == Qt.ItemDataRole.DisplayRole:
             return self.display(r, col)
-        if role == Qt.ItemDataRole.TextAlignmentRole and col == Col.AMOUNT:
+        if role == Qt.ItemDataRole.TextAlignmentRole and col in (Col.AMOUNT, Col.BALANCE):
             return int(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         if role == Qt.ItemDataRole.ForegroundRole and col == Col.AMOUNT:
             return amount_color(r.amount_cents)

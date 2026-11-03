@@ -12,7 +12,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
 )
 
-from hiro_budget.gui.common import money
+from hiro_budget.gui.common import error_color, money
 from hiro_budget.services.budget import BudgetMonth, Envelope
 
 RTA = "rta"  # combo data for "Ready to Assign"
@@ -59,13 +59,13 @@ class MoveMoneyDialog(QDialog):
             data = Envelope.of(preset) if preset is not None else RTA
             combo.setCurrentIndex(max(0, self._find(combo, data)))
         self.amount = QDoubleSpinBox()
-        self.amount.setRange(0.01, 10_000_000)
+        self.amount.setRange(0, 10_000_000)
         self.amount.setDecimals(2)
         self.amount.setSuffix(" €")
         self.amount.setGroupSeparatorShown(True)
-        self.amount.setValue(max(cents, 1) / 100)
+        self.amount.setValue(max(cents, 0) / 100)
         self.error = QLabel()
-        self.error.setStyleSheet("color: #c0392b")
+        self.error.setStyleSheet(f"color: {error_color().name()}")
 
         form = QFormLayout()
         form.addRow(self.tr("From"), self.source)
@@ -92,6 +92,10 @@ class MoveMoneyDialog(QDialog):
         src, dst = self.source.currentData(), self.target.currentData()
         if src == dst:
             self.error.setText(self.tr("Source and target must differ."))
+            return
+        if round(self.amount.value() * 100) <= 0:
+            self.error.setText(self.tr("Enter an amount."))
+            self.amount.setFocus()
             return
         self.from_id = None if src == RTA else src
         self.to_id = None if dst == RTA else dst

@@ -14,29 +14,39 @@ lassen** (das Einkommen des Vormonats ausgeben).
 
 Seiten (Seitenleiste, `Strg+1` … `Strg+6`): **Übersicht**, **Budget**, **Buchungen**,
 **Konten**, **Berichte**, **Kategorien & Regeln**. `Strg+K` durchsucht Seiten, Befehle,
-Konten und Buchungen; `F1` zeigt alle Tastenkürzel.
+Konten und Buchungen; `F1` zeigt alle Tastenkürzel. Diese Anleitung steht auch in der App:
+„Hilfe → Anleitung“.
 
 ---
 
 ## 0. Einmalig: einrichten
 
 1. **Konten**: jedes eigene Konto mit seiner IBAN (Depot: die Depotnummer), damit Importe
-   beim richtigen Konto landen. Für Umbuchungen zwischen eigenen Konten macht ein
-   `match`-Muster (z. B. „VISA REVOLUT“ auf dem Girokonto für Revolut-Aufladungen) daraus
-   Umbuchungen statt Ausgaben. Bargeld: „Neues Konto“, Art Bargeld, Anfangssaldo.
-   „Budgetkonto“ legt fest, mit welchen Konten das Budget plant (standardmäßig Giro-,
+   beim richtigen Konto landen. Für Umbuchungen zwischen eigenen Konten macht „Umbuchungen
+   auf dieses Konto erkennen“ (Muster auf Gegenpartei oder Verwendungszweck, z. B. „VISA
+   REVOLUT“ für Revolut-Aufladungen vom Girokonto) daraus Umbuchungen statt Ausgaben.
+   Bargeld: „Neues Konto“, Art Bargeld, Anfangssaldo. „Budget: Geld wird Kategorien
+   zugewiesen“ legt fest, mit welchen Konten das Budget plant (standardmäßig Giro-,
    Spar- und Bargeldkonten; Depot und Kredit führen nur einen Saldo).
    Reihenfolge: ein Konto nach oben oder unten ziehen oder ↑ / ↓ (Alt+↑ / Alt+↓), dann
    „Konten speichern“; die Seitenleiste zeigt dieselbe Reihenfolge. Ein Klick auf einen
    Spaltenkopf sortiert nur die Ansicht (erneut: absteigend, ein drittes Mal: wieder deine
    Reihenfolge).
+
+   ![Die Seite Konten: die Liste mit Salden, rechts die Einstellungen des gewählten Kontos, darunter sein Saldo über 12 Monate](images/workflows/de/accounts.png)
 2. **Kategorien** („Kategorien & Regeln“): Gruppen und Kategorien so, wie du budgetieren
    willst. Wenige und aussagekräftige sind besser als viele. „Einmalig“ ankreuzen für
    unregelmäßige Einnahmen und Ausgaben (Bonus, Steuererstattung, Reparaturen), die die
    Berichte weglassen können sollen; siehe „Einmaliges und Berichtsmonat“ in 5.
 3. **Regeln** (gleiche Seite): wiederkehrende Empfänger → Kategorie, der erste Treffer
    gewinnt. Die meisten Regeln entstehen später schnell aus den Buchungen selbst (siehe
-   1.3).
+   1.3). Die Felder nehmen reguläre Ausdrücke; das „?“ im Feld (oder dort `F1`, oder „Hilfe
+   → Regex-Spickzettel…“) zeigt die Syntax und Beispiele wie `(?i)rewe|edeka|aldi`. Die Zahl
+   hinter jeder Regel sagt, wie viele Buchungen sie kategorisiert; grau = keine (veraltet,
+   oder eine Regel weiter oben nimmt alle Treffer). Das Suchfeld über der Liste filtert nach
+   ID, Kategorie und Muster; „Buchungen anzeigen“ unter einer Regel zeigt ihre Treffer.
+
+   ![Kategorien & Regeln: links der Kategorienbaum, rechts die Regeln mit ihrer Trefferzahl und die gewählte Regel](images/workflows/de/rules.png)
 4. **Import-Ordner**: `import_folder` in `config/config.yaml` (Standard `input/`). Neue PDFs
    und CSVs dort lassen einen Punkt auf „Importieren“ in der Titelleiste erscheinen.
 5. **Budgetbeginn** (optional): `budget.start_month`; standardmäßig der erste Monat mit
@@ -78,6 +88,8 @@ Leg sie in den Import-Ordner (oder irgendwohin).
      bekommen werden („Kategorie (Vorschau)“). „neu, ersetzt manuelle Buchung“ heißt: Eine
      von Hand erfasste Buchung wird durch die importierte ersetzt (Kategorie und Notiz
      bleiben).
+
+   ![Der Import-Dialog: eine ING-CSV mit Saldo ✓ und Status „bereit“, darunter die Buchungen mit ihrer Kategorie; die leeren bleiben unkategorisiert](images/workflows/de/import.png)
 3. „N Dateien importieren“. Vor dem Import werden Datenbank und Konfiguration automatisch
    gesichert. Danach lernt der Klassifikator aus den kategorisierten Buchungen („Der
    Klassifikator lernt aus den kategorisierten Buchungen…“, 1–3 s).
@@ -146,20 +158,32 @@ kategorisieren“).
    korrigieren (`Enter`/`F2` auf der Zeile oder das Kategoriefeld in der Karte rechts),
    dann „Auswahl bestätigen“ oder „Alle angezeigten bestätigen (N)“. Bestätigte Vorschläge
    zählen als manuell und verbessern den Klassifikator.
+
+   ![Buchungen, „Zu prüfen“: die Vorschläge des Klassifikators mit ihrer Sicherheit, rechts die gewählte Buchung in der Karte](images/workflows/de/suggestions.png)
 2. **Unkategorisierte nach Empfänger**: „⚠ Unkategorisiert“ → „Nach Empfänger
    zuordnen…“. Ein Empfänger nach dem anderen mit allen seinen Buchungen; Kategorie wählen,
    „Regel anlegen: künftige Buchungen von … bekommen diese Kategorie“ ankreuzen, damit
    künftige Buchungen automatisch kategorisiert werden, „Zuordnen“. Damit ist der größte
    Teil der Liste schnell erledigt.
+
+   ![Nach Empfänger zuordnen: links die übrigen Empfänger, rechts die Buchungen des gewählten mit Kategorie und Regel-Option](images/workflows/de/assign-by-payee.png)
 3. **Der Rest von Hand**: Buchung wählen, `Enter`/`F2` oder Doppelklick auf ihre Kategorie:
    ein Menü mit einem Untermenü je Gruppe (die aktuelle Kategorie ist abgehakt); oder die
    Karte rechts.
    - Eine Zahlung für mehreres (Supermarkt + Drogerie, eine gemischte Online-Bestellung):
-     Rechtsklick → „Aufteilen…“ (nach Beträgen auf Kategorien verteilen).
+     „Aufteilen“ in der Karte rechts (oder `Strg+D`, oder Rechtsklick → „Aufteilen…“): je
+     Teil eine Zeile mit Kategorie oder Umbuchung, Betrag und Notiz; „Rest“ muss 0,00 sein,
+     dann „Aufteilung speichern“. Eine aufgeteilte Buchung zeigt dort ihre Teile, sie bleiben
+     änderbar; mit nur noch einem Teil ist sie wieder eine normale Buchung.
+
+     ![Eine Supermarkt-Buchung in der Karte aufteilen: je Teil eine Zeile, „Teil hinzufügen“, „Rest: 0,00 €“](images/workflows/de/split.png)
    - Wiederkehrender Empfänger ohne Regel: Rechtsklick → „Regel aus dieser Buchung
      erstellen…“; der Regel-Editor zeigt, wie viele Buchungen die Regel treffen würde.
    - Was man sich merken sollte („Geschenk für Oma“, „Rückzahlung folgt“): „Notiz“ in der
      Karte; Notizen sind durchsuchbar.
+   - Ist das viel? „Bei diesem Empfänger“ in der Karte: Anzahl und Durchschnitt der letzten
+     12 Monate, die letzten Buchungen, „Betrag geändert: vorher …“ bei einer neuen Höhe,
+     „Alle N anzeigen“.
 4. **Bargeld und andere manuelle Buchungen**: „Neue Buchung…“ (`Strg+N`) — Ausgabe,
    Einnahme oder Umbuchung auf einem beliebigen Konto (z. B. abgehobenes Bargeld, auf dem
    Markt ausgegeben). Eine Umbuchung auf ein anderes eigenes Konto legt dort die
@@ -176,6 +200,8 @@ kategorisiert (Schritt 1.3).
 
 1. Seite **Budget**, der aktuelle Monat („Heute“). Oben: „Zum Zuweisen“ — das Geld auf den
    Budgetkonten, das noch keine Aufgabe hat.
+
+   ![Die Seite Budget für einen Monat: oben links, wie „Zum Zuweisen“ zustande kommt, darunter die Kategorien mit Aus Vormonat, Zugewiesen, Aktivität, Verfügbar und Ziel](images/workflows/de/budget.png)
 2. **„Budget vorschlagen…“** schlägt je Kategorie einen Betrag aus den bisherigen Ausgaben
    vor.
    - „regelmäßig“ (Ausgaben in den meisten Monaten): der Median der letzten Monate, damit
@@ -186,6 +212,8 @@ kategorisiert (Schritt 1.3).
      abwählen, die du selbst festlegen willst; „Nur leere Kategorien“ lässt bereits
      Zugewiesenes stehen. Unten steht, was danach noch zuzuweisen ist. „Auswahl
      übernehmen“.
+
+   ![Budget vorschlagen: je Kategorie ihre Art, die Monate mit Ausgaben, Min / Median / Max und der Vorschlag](images/workflows/de/propose.png)
 3. **Anpassen** je Kategorie in „Zugewiesen“: Doppelklick oder `Enter`, dann `600`, `+50`,
    `-20` oder `=0` eintippen. Alles lässt sich rückgängig machen (`Strg+Z` / `Strg+Y`).
 4. **Ziele** für echte Ausgaben (Spalte „Ziel“, Doppelklick):
@@ -194,8 +222,11 @@ kategorisiert (Schritt 1.3).
    - „Wiederkehrend (z. B. jährlich)“: Kfz-Versicherung alle 12 Monate, fällig im Januar
    - „Sparguthaben“: ein Notgroschen, der erreicht werden soll, ohne Termin
 
+   ![Der Ziel-Dialog: „Betrag bis Datum“, 45.000 € bis 30.09.2029](images/workflows/de/target.png)
+
    Danach finanziert „Weitere ▾ → Ziele zuweisen“, was die Ziele in diesem Monat brauchen,
-   soweit das Geld reicht. Gelbes „Verfügbar“ = Ziel noch nicht finanziert.
+   soweit das Geld reicht. Gelbes „Verfügbar“ = Ziel noch nicht finanziert. Der Balken unter
+   jedem Ziel zeigt, wie weit es ist: grün im Plan, gelb, solange diesem Monat noch Geld fehlt.
 5. **„Zum Zuweisen“ auf 0 bringen**: positiv — dem Rest eine Aufgabe geben (Sparziel,
    Puffer, nächste große Ausgabe); negativ — es ist mehr zugewiesen als vorhanden, Geld aus
    Kategorien zurücknehmen („Zu viel zugewiesen – aus Kategorien zurücknehmen“).
@@ -203,8 +234,9 @@ kategorisiert (Schritt 1.3).
    Rechtsklick auf die Gruppe → „Gruppe als Ganzes budgetieren“.
 
 Die Regel dahinter: Saldo aller Budgetkonten = Zum Zuweisen + Summe von „Verfügbar“. Die
-Zusammenfassung unter dem Monat zeigt, wie „Zum Zuweisen“ zustande kommt („Kontostand Ende
-Vormonat“ + „Zufluss“ − Zugewiesenes).
+Zusammenfassung unter dem Monat zeigt, wie „Zum Zuweisen“ zustande kommt: „Kontostand Ende
+Vormonat“ + „Zufluss“ − „In Kategorien behalten“ (was die Kategorien aus dem Vormonat
+mitbringen) − „Zugewiesen“.
 
 ---
 
@@ -212,13 +244,15 @@ Vormonat“ + „Zufluss“ − Zugewiesenes).
 
 Zuerst Schritt 1, damit alle Buchungen des Monats da und kategorisiert sind.
 
-1. **Budget** → Vormonat (`Alt+←` oder der Pfeil neben dem Monat).
+1. **Budget** → Vormonat (`Alt+Bild↑` oder der Pfeil neben dem Monat).
 2. **Überzogene** Kategorien (rotes „Verfügbar“): Überziehungen werden nicht übertragen,
    sie werden vom „Zum Zuweisen“ des nächsten Monats abgezogen. Jetzt ausgleichen:
    - die rote Zeile wählen → „Geld verschieben…“ (`Strg+M`) aus einer Kategorie, in der
      Geld übrig ist, oder
    - „Weitere ▾ → Überziehungen ausgleichen“ gleicht alle aus „Zum Zuweisen“ aus, soweit
      möglich.
+
+   ![Geld verschieben: von „Zum Zuweisen“ in eine Kategorie, mit dem Betrag](images/workflows/de/move-money.png)
 3. **Abweichungen verstehen**: Doppelklick auf „Aktivität“ einer Kategorie zeigt ihre
    Buchungen des Monats. Falsche Kategorie? Dort korrigieren (die Buchung wandert in den
    richtigen Topf). Eine unerwartete Einmalausgabe? Notieren; vielleicht braucht sie ab
@@ -240,7 +274,7 @@ Zuerst Schritt 1, damit alle Buchungen des Monats da und kategorisiert sind.
 Am besten, wenn das Gehalt eingegangen ist (Einnahmen fließen in „Zum Zuweisen“ des Monats,
 in dem sie gebucht sind), oder vorab mit dem Geld, das schon da ist.
 
-1. **Budget** → nächster Monat (`Alt+→`).
+1. **Budget** → nächster Monat (`Alt+Bild↓`).
 2. Ein Ausgangspunkt, eins davon:
    - „Weitere ▾ → Vormonat übernehmen“: die Beträge des Vormonats in leere Kategorien
      (ruhige Monate)
@@ -264,6 +298,8 @@ in dem sie gebucht sind), oder vorab mit dem Geld, das schon da ist.
 
 ### Kurzer Blick jeden Monat: Übersicht
 
+![Die Übersicht: Karten für Zum Zuweisen, Überzogen, Unkategorisiert und Vermögen, der Vermögensverlauf, dieser Monat, die fälligen Fixkosten und die Hinweise](images/workflows/de/overview.png)
+
 | Karte / Bereich | Frage | Nächster Schritt |
 |---|---|---|
 | Zum Zuweisen | Hat jeder Euro eine Aufgabe? | anklicken → Budget |
@@ -272,7 +308,7 @@ in dem sie gebucht sind), oder vorab mit dem Geld, das schon da ist.
 | Nettovermögen | Wie hat sich das Vermögen in 12 Monaten entwickelt? | anklicken → Berichte → Vermögen |
 | Dieser Monat | Einnahmen, Ausgaben, gespart, Sparquote bisher | — |
 | Demnächst fällig | Welche Fixkosten kommen in den nächsten 30 Tagen? | ihre Budgetkategorien prüfen |
-| Hinweise | Fehlende Kontoauszüge, zu prüfende Vorschläge | die fehlenden Auszüge importieren |
+| Hinweise | Fehlende Kontoauszüge, Konten ohne Buchung seit Wochen (Bargeld zählen?), zu prüfende Vorschläge | die fehlenden Auszüge importieren; die Erinnerung je Konto unter „Konten“ abschalten |
 
 ### Berichte
 
@@ -283,16 +319,20 @@ speichert nach Excel/CSV.
 
 | Reiter | Welche Frage er beantwortet | Typischer Einsatz |
 |---|---|---|
-| Übersicht | Einnahmen und Ausgaben je Monat; darunter die Ausgaben je Monat als fixe und variable Kosten; Ausgaben nach Kategorie als Ring (die 7 größten und der Rest); wie sich eine Kategorie entwickelt (Kategorie-Verlauf) | monatlich; eine Kategorie wählen, um ihren Verlauf zu sehen |
+| Übersicht | Einnahmen und Ausgaben je Monat; darunter die Ausgaben je Monat als fixe und variable Kosten; Ausgaben nach Gruppe als Ring (ein Klick auf eine Gruppe zeigt ihre Kategorien, „← Alle Gruppen“ zurück; Doppelklick auf eine Kategorie: ihre Buchungen); wie sich eine Kategorie entwickelt (Kategorie-Verlauf) | monatlich; eine Kategorie wählen, um ihren Verlauf zu sehen |
 | Vermögen | Vermögen zu jedem Monatsende: Konten, Depot, abzüglich Kredit | vierteljährlich / jährlich |
 | Soll/Ist | Zugewiesen und ausgegeben je Kategorie und Monat | nach jedem Monat (3.4); Korrekturen planen |
 | Sparquote | (Einnahmen − Ausgaben) / Einnahmen je Monat und über 12 Monate | Monatsverlauf, Jahresziel |
 | Geldfluss | Wohin das Geld fließt: Einnahme-Kategorien → Einnahme-Gruppen → Ausgabe-Gruppen → Ausgabe-Kategorien (Sankey), mit dem Vermögensaufbau (Überschuss) oder dem, was aus Rücklagen kam; Ausgabe-Gruppen in ihren Budget-Farben; Kategorien unter 1 % je Gruppe zusammengefasst; Doppelklick auf einen Knoten zeigt seine Buchungen | Jahresrückblick; der ganze Zeitraum auf einen Blick |
 | Jahresvergleich | Ausgaben je Kategorie dieses Jahr gegen letztes Jahr (Januar bis zum selben Monat) | Jahresrückblick, schleichende Kosten finden |
 | Fixkosten | Erkannte wiederkehrende Zahlungen (Abos, Verträge, Raten) mit Kosten je Monat; beendete grau; Ring der Fixkosten gegen die durchschnittlichen variablen Kosten der letzten 12 Monate | zweimal im Jahr: kündigen, was nicht genutzt wird |
-| Baufinanzierung | Restschuld, Zinsen, Tilgung, Sondertilgungen je Jahr | jährlich; Entscheidung über Sondertilgung |
+| Baufinanzierung | Restschuld, Zinsen, Tilgung, Sondertilgungen je Jahr; Prognose (gestrichelt) aus der letzten Rate: wann abbezahlt, Zinsen bis dahin, Restschuld am Ende der Zinsbindung (`fixed_until` in `config.yaml`); „Sondertilgung pro Jahr“ rechnet aus, was eine Sondertilgung jeden Dezember bringt | jährlich; Entscheidung über Sondertilgung |
 | Depot | Wert je Wertpapier auf jedem Depotauszug gegen das eingezahlte Geld | nach jedem Depotauszug |
 | Empfänger | Größte Empfänger; Doppelklick zeigt die Buchungen | die großen Geldfresser finden |
+
+![Berichte → Soll/Ist für drei Monate: zugewiesen und ausgegeben je Monat, die größten Kategorien, die Tabelle je Kategorie](images/workflows/de/budget-vs-actual.png)
+
+![Berichte → Fixkosten: die wiederkehrenden Zahlungen mit Rhythmus und nächster Fälligkeit, das Donut der Fix- gegen die variablen Kosten](images/workflows/de/fixed-costs.png)
 
 ### Einmaliges und Berichtsmonat
 
@@ -320,12 +360,20 @@ welchem Monat Einnahmen und Ausgaben gehören:
   Buchungen, Buchungen, die zu einem anderen Monat zählen, mit „→ Monat“ markiert, und was
   nicht enthalten ist (Einmaliges). Doppelklick auf eine Buchung oder „Buchung zeigen“ öffnet sie auf der Seite
   Buchungen.
+
+  ![Die Aufschlüsselung von „Ausgegeben“ für Supermarkt in einem Monat: ihre 9 Buchungen, die genau die Zahl im Bericht ergeben](images/workflows/de/breakdown.png)
 - Berichte → Empfänger: Doppelklick auf einen Empfänger.
 - `Strg+K`: Empfänger oder Stichwort eintippen → „Alle N Buchungen mit „…“ anzeigen“.
-- „Buchungen“: Suchfeld (Empfänger, Verwendungszweck, Notizen), Filter für Zeitraum, Konto
+- Beträge: „17,99“ findet ±17,99 €, „-17,99“ nur diese Ausgabe, „17“ 17,00 bis 17,99 €,
+  „100..200“ einen Bereich, „>500“ / „<50“ größere / kleinere Beträge (in beiden Suchen).
+- „Buchungen“: Suchfeld (Empfänger, Verwendungszweck, Notizen, Betrag), Filter für Zeitraum, Konto
   und Kategorie (eine Gruppe im Kategoriefilter, z. B. „Wohnen“, zeigt alle ihre
   Kategorien); die Zeile unten summiert die angezeigten Buchungen (Eingang / Ausgang).
   „Datei → Exportieren → Buchungen (aktueller Filter)…“ exportiert genau das Angezeigte.
+  Mit einem Konto im Filter zeigt die Spalte „Saldo“ den Kontostand nach jeder Buchung, wie
+  auf dem Kontoauszug: zum Abgleich und um eine fehlende Buchung zu finden. „Konten“ zeigt
+  unter der Liste den Saldoverlauf des gewählten Kontos (12 Monate; Doppelklick: seine
+  Buchungen).
 
 ### Jahresrückblick (Januar)
 
@@ -344,8 +392,16 @@ welchem Monat Einnahmen und Ausgaben gehören:
 ## 6. Pflege
 
 - **Sicherungen**: automatisch vor jedem Import (die neuesten 10 bleiben); von Hand
-  „Datei → Sicherung erstellen“; „Datei → Sicherungsordner öffnen“. Wiederherstellen: App
-  schließen und die Dateien zurückkopieren.
+  „Datei → Sicherung erstellen“; „Datei → Sicherungsordner öffnen“. Wiederherstellen:
+  „Datei → Sicherung wiederherstellen…“ (Datum, Anlass, Anzahl Buchungen, Größe; vorher wird
+  der aktuelle Stand gesichert, danach startet die App neu). Der Datenordner bleibt, wo er ist.
+- **Datenordner in der Cloud oder auf einem NAS**: „Einstellungen → Datenordner…“ →
+  „Ändern…“ kopiert Datenbank, Klassifikator, Sicherungen und Ansichtseinstellungen in einen
+  anderen Ordner (z. B. in OneDrive), prüft die Kopien und startet die App darauf neu; die
+  alten Dateien lassen sich dabei löschen. Ein Ordner, der schon eine Datenbank enthält
+  (zweiter PC, Wiederherstellung), wird stattdessen geöffnet. Ist der Ordner beim Start nicht
+  erreichbar (Cloud offline), fragt die App: erneut versuchen, anderen Ordner wählen oder
+  beenden. Die Konfiguration bleibt in `config/`.
 - **Regeln geändert oder viele Buchungen korrigiert**: „Werkzeuge → Kategorisierung neu
   ausführen“ wendet die Regeln erneut an (manuelle Zuordnungen bleiben); „Werkzeuge →
   Klassifikator neu trainieren“ trainiert die Vorschläge neu.

@@ -1,6 +1,6 @@
 name: ing_depot_pdf
 version: 1.0.0
-api: 1
+api: 2
 description: ING Depotauszug as PDF (holdings and their values)
 requires: [ing_common]
 importers:

@@ -22,7 +22,7 @@ from dataclasses import dataclass, field
 from datetime import date, timedelta
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy.orm import Session
 
 from hiro_budget.db.models import Account, Category, CategoryGroup, Split, Transaction
 from hiro_budget.services.reports import (
@@ -150,39 +150,59 @@ def recurring_costs(
     lookback = until - timedelta(days=round(LOOKBACK_MONTHS * 30.44))
     since = min(since, lookback) if since else lookback
     budget_accounts = set(session.scalars(select(Account.id).where(Account.on_budget.is_(True))))
-    q = (
-        select(Transaction)
-        .options(selectinload(Transaction.splits).selectinload(Split.category))
-        .where(
-            Transaction.amount_cents < 0,
-            Transaction.counterpart_of_id.is_(None),
-            Transaction.booking_date > since,
-            Transaction.booking_date <= until,
-        )
+    categories = {
+        c.id: (c.name, c.group_id)
+        for c in session.execute(select(Category.id, Category.name, Category.group_id))
+    }
+    # plain columns, not ORM entities: ten years of expenses in a fraction of the time (#60)
+    q = select(
+        Transaction.id,
+        Transaction.booking_date,
+        Transaction.amount_cents,
+        Transaction.merchant,
+        Transaction.counterparty,
+        Transaction.booking_type,
+    ).where(
+        Transaction.amount_cents < 0,
+        Transaction.counterpart_of_id.is_(None),
+        Transaction.booking_date > since,
+        Transaction.booking_date <= until,
     )
     if account_id is not None:
         q = q.where(Transaction.account_id == account_id)
+    rows = session.execute(q).all()
+    splits: dict[int, list[tuple[int | None, int | None]]] = defaultdict(list)
+    ids = q.with_only_columns(Transaction.id).scalar_subquery()
+    for tx_id, target, category_id in session.execute(
+        select(Split.transaction_id, Split.transfer_account_id, Split.category_id)
+        .where(Split.transaction_id.in_(ids))
+        .order_by(Split.id)
+    ):
+        splits[tx_id].append((target, category_id))
     groups: dict[str, list[Payment]] = defaultdict(list)
-    for tx in session.scalars(q):
-        if tx.splits and all(s.transfer_account_id in budget_accounts for s in tx.splits):
+    for tx_id, booking_date, amount, merchant, counterparty, booking_type in rows:
+        parts = splits.get(tx_id, [])
+        if parts and all(target in budget_accounts for target, _ in parts):
             continue  # money moved to another own budget account (e.g. a top-up)
-        payee = tx.display_name or tx.counterparty or tx.booking_type
+        payee = merchant or counterparty or booking_type
         key = payee_key(payee)
         if not key:
             continue
-        split = next((s for s in tx.splits if s.category), None)
+        category_id = next((c for _, c in parts if c is not None), None)
+        name, group_id = categories[category_id] if category_id is not None else (None, None)
         payment = Payment(
-            tx.booking_date,
-            -tx.amount_cents,
-            split.category.name if split else None,
+            booking_date,
+            -amount,
+            name,
             payee,
-            card=tx.merchant is not None,
-            group_id=split.category.group_id if split else None,
-            transaction_id=tx.id,
+            card=merchant is not None,
+            group_id=group_id,
+            transaction_id=tx_id,
         )
         groups[key].append(payment)
 
-    running, ended = [], []
+    running: list[Recurring] = []
+    ended: list[Recurring] = []
     for payments in groups.values():
         for cluster in _clusters(payments):
             item = _recurring(cluster)
