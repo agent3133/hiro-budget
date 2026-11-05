@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import html
 import re
-import unicodedata
 from dataclasses import dataclass, fields
 
 from PySide6.QtCore import QSignalBlocker, Qt, QTimer, Signal
@@ -55,28 +54,13 @@ from hiro_budget.gui.widgets import (
 )
 from hiro_budget.services import config_edit
 from hiro_budget.services.categorization.pipeline import recategorize_all
-from hiro_budget.services.config_edit import KeyRenames
+from hiro_budget.services.config_edit import KeyRenames, slugify, unique
 from hiro_budget.services.sync import check_key_renames
 from hiro_budget.services.transactions import TransactionRow
 
 # key in categories.yaml (categories: full "group.category" key); None: new item
 SAVED_KEY_ROLE = Qt.ItemDataRole.UserRole + 1
 KEY_EDITED_ROLE = Qt.ItemDataRole.UserRole + 2  # key typed by the user (not from the name)
-_UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
-
-
-def slugify(text: str) -> str:
-    text = text.lower().translate(_UMLAUTS)
-    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
-    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or "neu"
-
-
-def unique(base: str, taken: set[str]) -> str:
-    key, i = base, 2
-    while key in taken:
-        key, i = f"{base}_{i}", i + 1
-    return key
-
 
 # --- categories ----------------------------------------------------------------------
 

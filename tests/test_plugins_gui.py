@@ -19,6 +19,7 @@ BUILTIN = [
     "ing_loan_pdf",
     "ing_umsatzanzeige_csv",
     "ing_umsatzanzeige_pdf",
+    "mcp",
     "paypal_csv",
     "revolut_csv",
     "revolut_pdf",

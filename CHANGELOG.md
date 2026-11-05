@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.3.0
+
+- Command line: every read and write of the app is one operation, and `hiro-budget <command>`
+  is generated from them (`--json` on every command); see docs/cli.md.
+- MCP server (`hiro-budget mcp`, a `frontends` plugin): the same operations over stdio for
+  AI agents; see docs/mcp.md. Warnings instead of silent results: negative Ready to
+  Assign, unpaired transfers, rules that match nothing, duplicate category names.
+- Change journal and undo for every write (also from the CLI and MCP); a backup is made
+  before the first write of a session.
+- The window picks up changes made outside the app (CLI, MCP) without a restart.
+- Plugin API 3: plugins can provide frontends. Plugins written for API 2 keep working.
+- Fixes: `accept_suggestions` refuses bookings without a suggestion; `test_rule` reports the
+  real number of matches; `get_overview` lists overdue payments apart from upcoming ones.
+
 ## 0.2.0
 
 - Budget: a progress bar under each target; Move money suggests the line that needs money.

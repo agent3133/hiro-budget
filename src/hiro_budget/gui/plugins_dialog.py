@@ -105,6 +105,8 @@ class PluginsDialog(QDialog):
             parts.append(self.tr("%n CSV format(s)", "", len(m.formats)))
         if m.connectors:
             parts.append(self.tr("%n bank connection(s)", "", len(m.connectors)))
+        if m.frontends:
+            parts.append(self.tr("%n command(s)", "", len(m.frontends)))
         if not parts:
             parts.append(self.tr("library"))
         return ", ".join(parts)

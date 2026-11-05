@@ -1,6 +1,6 @@
 [project]
 name = "hiro-budget"
-version = "0.2.0"
+version = "0.3.0"
 description = "Hiro Budget: a local family budget (YNAB-style): import bank statements, categorize, report"
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -46,6 +46,7 @@ demo = [
 ]
 dev = [
     "fpdf2>=2.8.9",
+    "mcp>=2.3.0",
     "mypy>=2.4.1",
     "pytest>=9.1.1",
     "pytest-qt>=4.5.0",
@@ -70,7 +71,7 @@ select = ["E", "F", "I", "B", "UP"]
 
 [tool.mypy]
 # Type checking of the layers without Qt (#80); the GUI is not checked (Qt's Optional returns).
-files = ["src/hiro_budget/services", "src/hiro_budget/importers", "src/hiro_budget/db", "src/hiro_budget/config.py", "src/hiro_budget/plugins", "src/hiro_budget/plugin_api.py"]
+files = ["src/hiro_budget/services", "src/hiro_budget/importers", "src/hiro_budget/db", "src/hiro_budget/config.py", "src/hiro_budget/plugins", "src/hiro_budget/plugin_api.py", "src/hiro_budget/ops"]
 plugins = ["pydantic.mypy"]
 python_version = "3.12"
 ignore_missing_imports = true

@@ -317,3 +317,40 @@ class BudgetAssignment(Base):
 
     category: Mapped[Category | None] = relationship()
     group: Mapped[CategoryGroup | None] = relationship()
+
+
+class ChangeLog(Base):
+    """One change made through the operations layer (CLI, MCP): who, what, and (as
+    ``ChangeItem`` rows) the before and after state of every row and file it touched,
+    so that it can be undone (#86)."""
+
+    __tablename__ = "change_log"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    session_id: Mapped[str] = mapped_column(String(32), index=True)  # one CLI run / MCP process
+    source: Mapped[str] = mapped_column(String(10))  # "cli" | "mcp"
+    operation: Mapped[str] = mapped_column(String(60))
+    args_json: Mapped[str] = mapped_column(Text, default="{}")
+    summary: Mapped[str] = mapped_column(Text, default="")
+    # local time, as undone_at, the pruning and the backup names (SQLite's now() is UTC)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, default=datetime.now, server_default=func.now()
+    )
+    undoable: Mapped[bool] = mapped_column(Boolean, default=True)
+    undone_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class ChangeItem(Base):
+    """A row (``kind`` "row": table and id) or a configuration file (``kind`` "file": path
+    relative to the config folder) before and after a change; None: did not exist."""
+
+    __tablename__ = "change_item"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    log_id: Mapped[int] = mapped_column(ForeignKey("change_log.id", ondelete="CASCADE"), index=True)
+    kind: Mapped[str] = mapped_column(String(4))
+    table_name: Mapped[str | None] = mapped_column(String(40))
+    row_id: Mapped[int | None] = mapped_column(Integer)
+    path: Mapped[str | None] = mapped_column(String(200))
+    before_json: Mapped[str | None] = mapped_column(Text)  # a row as JSON, or the file's text
+    after_json: Mapped[str | None] = mapped_column(Text)

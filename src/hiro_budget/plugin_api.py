@@ -23,13 +23,32 @@ manager whose session lists the bank's accounts (``RemoteAccount``) and fetches 
 ``incremental`` statement. It raises ``LoginError``, ``Offline``, ``Cancelled`` or
 ``ConnectorError``; the app asks for the secret (PIN) and the confirmations (TAN, app).
 
+A **frontend** (``frontends:``, API 3) adds a command to the command line, e.g.
+``hiro-budget mcp``::
+
+    class MyFrontend:
+        command = "mine"                  # hiro-budget mine ...
+        help = "what it does"
+        source = "mine"                   # who a change is journaled as (letters, up to 10)
+
+        def add_arguments(self, parser: argparse.ArgumentParser) -> None: ...
+        def run(self, args: argparse.Namespace, operations: Operations) -> int: ...
+
+``Operations`` is everything a frontend may do: ``list()`` the operations of the app (name,
+description, JSON schemas of arguments and result, read only / undoable) and ``call(name,
+arguments)``. A call returns the text, the data and the error of the operation; it never
+raises for what a user or an agent can get wrong.
+
 Code of another plugin (one in ``requires``) is reached with ``module("plugin", "module")``.
 """
 
 from __future__ import annotations
 
+import logging
 import types
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 from hiro_budget.importers.base import (
     FileImporter,
@@ -51,10 +70,19 @@ from hiro_budget.importers.connectors import (
 )
 from hiro_budget.money import parse_german_amount
 
-API_VERSION = 2
+API_VERSION = 3
+
+if TYPE_CHECKING:
+    from hiro_budget.ops import OpContext
+
+log = logging.getLogger(__name__)
 
 __all__ = [
     "API_VERSION",
+    "CallResult",
+    "OperationInfo",
+    "Operations",
+    "app_version",
     "Cancelled",
     "Confirmation",
     "Connector",
@@ -75,6 +103,85 @@ __all__ = [
     "pdf_first_page_text",
     "pdf_page_texts",
 ]
+
+
+def app_version() -> str:
+    from hiro_budget import __version__
+
+    return __version__
+
+
+@dataclass(frozen=True)
+class OperationInfo:
+    name: str  # snake_case, e.g. "list_bookings"
+    summary: str  # one line
+    description: str  # what it does, units, how ids are found
+    input_schema: dict[str, Any]  # JSON schema of the arguments, without $ref
+    output_schema: dict[str, Any]  # JSON schema of ``CallResult.data``
+    read_only: bool
+    undoable: bool  # a change that ``undo_change`` takes back
+
+
+@dataclass
+class CallResult:
+    text: str = ""  # what to show a person or an LLM; never cut to a terminal width
+    data: dict[str, Any] = field(default_factory=dict)  # the result as JSON
+    error: str | None = None  # a message the caller can act on; then text is the same
+
+
+class Operations:
+    """The operations of the app for a frontend. One per run: its ``session_id`` groups
+    the changes it makes (``undo_change`` takes a whole session back)."""
+
+    def __init__(self, ctx: OpContext, read_only: bool = False) -> None:
+        self._ctx = ctx
+        self.read_only = read_only  # only the operations that do not change anything
+
+    @property
+    def session_id(self) -> str:
+        return self._ctx.session_id
+
+    def list(self) -> list[OperationInfo]:
+        from hiro_budget.ops import registry
+        from hiro_budget.ops.schema import inline_schema
+
+        return [
+            OperationInfo(
+                name=op.name,
+                summary=op.summary,
+                description=op.description,
+                input_schema=inline_schema(op.args),
+                output_schema=inline_schema(op.result, mode="serialization"),
+                read_only=op.read_only,
+                undoable=op.undoable,
+            )
+            for op in registry()
+            if op.read_only or not self.read_only
+        ]
+
+    def call(self, name: str, arguments: dict[str, Any] | None = None) -> CallResult:
+        from hiro_budget.ops import OpError, call, find
+
+        try:
+            op = find(name)
+            if self.read_only and not op.read_only:
+                raise OpError(f"'{name}' changes data and this server is read only")
+            result = call(self._ctx, name, arguments or {})
+            return CallResult(text=op.render(result, None), data=result.model_dump(mode="json"))
+        except OpError as e:
+            return CallResult(text=str(e), error=str(e))
+        except Exception as e:  # a bug, not the caller's mistake: logged, the caller goes on
+            log.exception("operation %s failed", name)
+            message = f"internal error in {name}: {type(e).__name__}: {e}"
+            return CallResult(text=message, error=message)
+
+    @classmethod
+    def create(cls, settings: Any, source: str, read_only: bool = False) -> Operations:
+        """For the app: the operations on these settings, changes journaled as ``source``."""
+        from hiro_budget.app import App
+        from hiro_budget.ops import OpContext
+
+        return cls(OpContext(App(settings), source=source), read_only)
 
 
 def pdf_page_texts(path: Path, x_tolerance: float = 3) -> list[str]:

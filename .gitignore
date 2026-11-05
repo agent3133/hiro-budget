@@ -19,6 +19,7 @@ data/
 *.db
 *.db-journal
 *.joblib
+.marketing
 
 # Generated demo database, UI state and backups (demo/generate.py)
 demo/data/

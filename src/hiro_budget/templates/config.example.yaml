@@ -102,9 +102,11 @@ matching:
   days: 7
 
 # Backups (database + configuration) in <database folder>/backups: one before every
-# import, the newest "keep" are kept. Also: File > Create backup.
+# import, and one before the first change a command (hiro-budget ...) or an agent makes in
+# a session (before_write); the newest "keep" are kept. Also: File > Create backup.
 backup:
   before_import: true
+  before_write: true
   keep: 10
 
 # Online banking: set up in Settings > Bank access. Per login the connector (a plugin, e.g.

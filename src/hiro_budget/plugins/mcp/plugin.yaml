@@ -1,0 +1,6 @@
+name: mcp
+version: 1.0.0
+api: 3
+description: MCP server over stdio (hiro-budget mcp) for LLM agents such as the Hiro agent
+frontends:
+  - {module: frontend, class: McpFrontend}

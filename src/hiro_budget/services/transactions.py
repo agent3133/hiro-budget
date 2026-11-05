@@ -48,6 +48,7 @@ class TxFilter:
     account_id: int | None = None
     category: str | int = ALL  # a constant above, group_filter(id) or a category id
     text: str = ""
+    amount: str = ""  # an amount query ("17,99", "100..200", ">500"), apart from the text
     ids: tuple[int, ...] | None = None  # only these bookings (e.g. the hits of a rule)
     ids_label: str = ""  # what they are, shown above the list
 
@@ -235,6 +236,11 @@ def _apply_filter(q: Select, f: TxFilter) -> Select:
         if (amount := parse_amount_query(f.text)) is not None:
             matches.append(_amount_condition(amount))  # "17,99" also finds the text
         q = q.where(or_(*matches))
+    if f.amount.strip():
+        amount = parse_amount_query(f.amount)
+        if amount is None:
+            raise ValueError(f"not an amount query: {f.amount!r}")
+        q = q.where(_amount_condition(amount))
     split = select(Split.id).where(Split.transaction_id == Transaction.id)
     match f.category:
         case str() if f.category == UNCATEGORIZED:
@@ -289,9 +295,10 @@ _TX_COLUMNS = (
 
 
 def list_transactions(
-    session: Session, f: TxFilter | None = None, limit: int | None = None
+    session: Session, f: TxFilter | None = None, limit: int | None = None, offset: int = 0
 ) -> list[TransactionRow]:
-    """Bookings of the filter, newest first (only the newest ``limit``, if given).
+    """Bookings of the filter, newest first (only the newest ``limit``, if given, after
+    skipping ``offset``).
 
     Plain columns in three queries (bookings, their splits, their counter-bookings) and the
     few accounts and categories once, no ORM entities: ten years of bookings in a fraction
@@ -317,6 +324,8 @@ def list_transactions(
     q = q.order_by(Transaction.booking_date.desc(), Transaction.id.desc())
     if limit is not None:
         q = q.limit(limit)
+        if offset:
+            q = q.offset(offset)
     tx_rows = session.execute(q).all()
     if not tx_rows:
         return []

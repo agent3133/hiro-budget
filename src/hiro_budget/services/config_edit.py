@@ -7,6 +7,7 @@ so comments at the top of the file and in other sections are preserved.
 from __future__ import annotations
 
 import re
+import unicodedata
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -188,6 +189,21 @@ def _category_map(c) -> CommentedMap:
 
 
 KEY_FORMAT = re.compile(r"^[a-z0-9_]+$")
+_UMLAUTS = str.maketrans({"ä": "ae", "ö": "oe", "ü": "ue", "ß": "ss"})
+
+
+def slugify(text: str) -> str:
+    """A YAML key from a name: "Bäckerei & Café" -> "baeckerei_cafe"."""
+    text = text.lower().translate(_UMLAUTS)
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    return re.sub(r"[^a-z0-9]+", "_", text).strip("_") or "neu"
+
+
+def unique(base: str, taken: set[str]) -> str:
+    key, i = base, 2
+    while key in taken:
+        key, i = f"{base}_{i}", i + 1
+    return key
 
 
 @dataclass

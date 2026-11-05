@@ -132,6 +132,8 @@ class MatchingConfig(StrictModel):
 class BackupConfig(StrictModel):
     # Copy database and configuration before every import; keep the newest backups.
     before_import: bool = True
+    # ...and before the first change a command line / agent session makes (#85)
+    before_write: bool = True
     keep: int = Field(10, ge=1, le=100)
 
 

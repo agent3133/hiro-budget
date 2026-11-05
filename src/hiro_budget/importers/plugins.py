@@ -36,7 +36,7 @@ import types
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
@@ -55,7 +55,9 @@ log = logging.getLogger(__name__)
 
 # Plugin API versions this app supports. 2 (#82): connectors next to file importers; all
 # plugins are built in or the user's own, so version 1 was replaced without a transition.
-API_VERSIONS = frozenset({2})
+# 3 (#84) only adds: ``frontends`` (commands of the command line, e.g. ``hiro-budget mcp``)
+# and ``plugin_api.Operations``; plugins of version 2 keep working.
+API_VERSIONS = frozenset({2, 3})
 MANIFEST = "plugin.yaml"
 BUILTIN_PACKAGE = "hiro_budget.plugins"
 USER_PACKAGE = "hiro_budget_user_plugins"  # synthetic package of config/plugins/
@@ -96,6 +98,7 @@ class PluginManifest(BaseModel):
     formats: list[str] = []  # *.csv.yaml files in the plugin folder
     connectors: list[ImporterEntry] = []
     enrichers: list[EnricherEntry] = []
+    frontends: list[ImporterEntry] = []  # commands of the command line (API 3)
 
     @field_validator("version", mode="before")
     @classmethod
@@ -104,7 +107,7 @@ class PluginManifest(BaseModel):
 
     @property
     def declares_code(self) -> bool:
-        return bool(self.importers or self.connectors or self.enrichers)
+        return bool(self.importers or self.connectors or self.enrichers or self.frontends)
 
 
 Status = Literal["available", "disabled", "replaced", "error"]
@@ -245,6 +248,29 @@ class PluginRegistry:
     def connector(self, name: str) -> Connector | None:
         return next((c for c in self.connectors() if c.name == name), None)
 
+    def frontends(self, reserved: Collection[str] = ()) -> list[Any]:
+        """Instances of all frontend classes of available plugins (API 3): objects with
+        ``command``, ``help``, ``add_arguments(parser)`` and ``run(args, operations)``.
+        A command that is in ``reserved`` (built in) or taken by an earlier plugin is a
+        problem of the later plugin, not a crash."""
+        found: list[Any] = []
+        taken = set(reserved)
+        for p in self.available:
+            for entry in p.spec.frontends:
+                try:
+                    frontend = getattr(self.module(p.name, entry.module), entry.class_)()
+                    command = frontend.command
+                    if not isinstance(command, str) or not command.isidentifier():
+                        raise ValueError(f"command {command!r} is not a name")
+                    if command in taken:
+                        raise ValueError(f"the command '{command}' exists already")
+                except Exception as e:
+                    self.fail(p, f"frontend {entry.module}:{entry.class_}: {e!r}")
+                    continue
+                taken.add(command)
+                found.append(frontend)
+        return found
+
     def enricher_for(
         self, *, bank_code: str | None = None, institution: str | None = None
     ) -> Enricher | None:
@@ -304,6 +330,8 @@ def _read(path: Path, origin: Origin, parent_package: str) -> Plugin:
         plugin.status, plugin.problem = "error", f"name '{m.name}' differs from its folder"
     elif m.api not in API_VERSIONS:
         plugin.status, plugin.problem = "error", f"plugin API {m.api} is not supported"
+    elif m.frontends and m.api < 3:
+        plugin.status, plugin.problem = "error", "frontends need plugin API 3"
     elif missing := [f for f in m.formats if not (path / f).is_file()]:
         plugin.status, plugin.problem = "error", f"missing format files: {', '.join(missing)}"
     return plugin

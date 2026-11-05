@@ -331,11 +331,25 @@ The **Budget** tab shows one month at a time:
 The budget keeps this invariant: balance of all budget accounts = Zum Zuweisen + sum
 of Verfügbar.
 
+## Command line and agents
+
+Almost everything is also a command: `hiro-budget overview`, `budget show`, `tx list
+--category uncategorized`, `tx categorize`, `rules add`, `report monthly` and more, each with
+`--json` ([docs/cli.md](docs/cli.md)). Every change is journaled and can be taken back with
+`hiro-budget undo`.
+
+`hiro-budget mcp` is an MCP server over stdio, so that an LLM agent (the Hiro agent, ...) can
+read the budget, categorize bookings and create rules with the same operations
+([docs/mcp.md](docs/mcp.md): setup, the tools, `--read-only` for a first try).
+
 ## Backups
 
 Before every import (GUI and command line) the database and the configuration
 (config/categories/rules.yaml) are copied to `data/backups/<date>_<time>_import/`; the
-newest 10 are kept (`backup.keep`, off with `backup.before_import: false`). *File →
+newest 10 are kept (`backup.keep`, off with `backup.before_import: false`). The same
+happens before the first change a command line session or an agent makes
+(`..._cli` / `..._mcp`, off with `backup.before_write: false`); the open window loads
+such changes within about 2 seconds. *File →
 Create backup* makes one by hand, *File → Open backup folder* shows them. To restore,
 close the app and copy the files of a backup back (the database into `data/`, the YAML
 files into `config/`).

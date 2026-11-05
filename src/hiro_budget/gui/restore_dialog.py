@@ -51,6 +51,8 @@ class RestoreDialog(QDialog):
             "import": self.tr("before an import"),
             "manual": self.tr("by hand"),
             "restore": self.tr("before a restore"),
+            "cli": self.tr("before a change by the command line"),
+            "mcp": self.tr("before a change by an agent"),
         }
         locale = QLocale()
         self.backups = backup.list_backups(app.settings)

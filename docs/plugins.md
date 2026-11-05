@@ -12,8 +12,9 @@ For an AI assistant that writes an importer from a sample of your statement, see
 | a PDF statement, or a CSV a format cannot describe | a **file importer**: a Python class | this guide, [plugins.llm.md](plugins.llm.md) |
 | bookings fetched from a bank's interface | a **connector**: a Python class | section 7 |
 | code several importers of one bank share | a **library** plugin | section 6 |
+| your own command on the command line (e.g. an MCP server) | a **frontend**: a Python class (API 3) | section 8 |
 
-All of them deliver the same thing, a `ParsedStatement` (section 4), and the app stores it
+Importers, formats and connectors deliver the same thing, a `ParsedStatement` (section 4), and the app stores it
 the same way: balance check, duplicates, manual entries, categorization, import history.
 
 ---
@@ -31,7 +32,7 @@ config/plugins/musterbank_pdf/      your own plugin (built-in ones: src/hiro_bud
 ```yaml
 name: musterbank_pdf          # = the folder name: lower case letters, digits, _
 version: 1.0.0
-api: 2                        # the plugin API version (plugin_api.API_VERSION)
+api: 2                        # the plugin API version: 2, or 3 with frontends (section 8)
 description: Musterbank Kontoauszug as PDF
 requires: []                  # other plugins this one uses (section 6)
 importers:                    # file importers: module (file in the folder) and class
@@ -39,6 +40,7 @@ importers:                    # file importers: module (file in the folder) and 
 formats: []                   # CSV formats: *.csv.yaml files in the folder
 connectors: []                # bank connections, like importers (section 7)
 enrichers: []                 # see section 6
+frontends: []                 # commands of the command line (API 3, section 8)
 ```
 
 Unknown keys are errors: a misspelt key would otherwise be ignored silently.
@@ -118,7 +120,8 @@ importers show more cases:
 | `module("plugin", "module")` | a module of a required plugin (section 6) |
 | `enricher_for(bank_code=…, institution=…)` | a bank's enricher (section 6) |
 | `RemoteAccount`, `Confirmation`, `LoginError`, `Offline`, `Cancelled`, `ConnectorError` | for connectors (section 7) |
-| `API_VERSION` | the API version of the running app (2) |
+| `Operations`, `OperationInfo`, `CallResult` | for frontends (section 8) |
+| `API_VERSION` | the API version of the running app (3) |
 
 ## 4. What the app does with the statement
 
@@ -247,7 +250,57 @@ class MusterbankConnector:
   server and the login's `name` for a known bank code); a `field_validator` on the model
   rejects wrong settings with a message (FinTS: only `https://` servers).
 
-## 8. Contribute it
+## 8. Frontends: your own command (API 3)
+
+A **frontend** adds a command to the command line, `hiro-budget <command>`. The app's own
+MCP server (`hiro-budget mcp`, plugin `mcp`, see [mcp.md](mcp.md)) is one. A frontend does
+not read statements; it talks to the app through the operations the command line has
+(`hiro-budget --help` lists them): list bookings, change a category, assign budget, and so
+on.
+
+```yaml
+name: my_command
+version: 1.0.0
+api: 3                        # frontends need API 3
+description: What it does
+frontends:
+  - {module: front, class: MyFrontend}
+```
+
+```python
+import argparse
+
+from hiro_budget.plugin_api import Operations
+
+
+class MyFrontend:
+    command = "mine"          # hiro-budget mine ...: a name that no built-in command has
+    help = "what `hiro-budget mine` does"
+    source = "mine"           # who the journal names as the author of its changes
+
+    def add_arguments(self, parser: argparse.ArgumentParser) -> None:
+        parser.add_argument("--month")
+
+    def run(self, args: argparse.Namespace, operations: Operations) -> int:
+        result = operations.call("get_budget", {"month": args.month})
+        print(result.error or result.text)
+        return 1 if result.error else 0
+```
+
+`Operations` has `list()` (name, summary, description, JSON schemas of the arguments and the
+result, whether it only reads, whether a change can be undone) and `call(name, arguments)`
+returning `text` (for a person), `data` (the result as JSON) and `error` (a message, or
+`None`). A call does not raise for what a caller can get wrong; an unknown category is an
+`error` that suggests the right keys. Every change a frontend makes goes into the journal
+(`hiro-budget history`) under one session id and can be undone with `hiro-budget undo
+--session <id>`; a backup is made before the first change.
+
+A name that a built-in command or an earlier plugin has already taken is a problem of the
+later plugin (shown in "Settings → Plugins…"), not a crash. Built-in commands never load the
+plugin registry; `hiro-budget <your command>` loads it, and, being program code, a plugin of
+yours must be enabled first.
+
+## 9. Contribute it
 
 To have your importer in the app for everyone, open a pull request; see
 [CONTRIBUTING.md](../CONTRIBUTING.md). In short:

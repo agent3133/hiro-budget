@@ -158,6 +158,9 @@ importers:
   - {module: importer, class: MusterbankPdfImporter}
 ```
 
+Plugin API 3 only adds `frontends:` (own commands of the command line, `docs/plugins.md`
+section 8); a file importer stays `api: 2` or `api: 3`, both work.
+
 ## 5. Worked example
 
 A made-up statement, as `dump-pdf` prints it:

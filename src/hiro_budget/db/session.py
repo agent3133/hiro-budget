@@ -26,6 +26,9 @@ def make_engine(db_path: Path | str) -> Engine:
     def _pragmas(dbapi_conn, _record):  # noqa: ANN001
         cur = dbapi_conn.cursor()
         cur.execute("PRAGMA foreign_keys=ON")
+        # the CLI, an agent and the app share the file: wait for the other one's write
+        # instead of failing with "database is locked" (#85)
+        cur.execute("PRAGMA busy_timeout=5000")
         cur.close()
 
     return engine

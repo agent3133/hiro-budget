@@ -73,6 +73,8 @@ from hiro_budget.services.categorization.pipeline import recategorize_all
 from hiro_budget.services.transactions import TransactionRow
 
 PREBUILD_DELAY_MS = 1000  # after the window appeared
+OUTSIDE_POLL_MS = 2000  # look for changes of the command line / an agent this often (#85)
+OUTSIDE_NOTE_MS = 8000  # how long the note "N changes loaded" stays in the status bar
 
 
 class MainWindow(QMainWindow):
@@ -120,6 +122,13 @@ class MainWindow(QMainWindow):
         # window is up, so the first click on them is as quick as on the others.
         self._prebuild_timer = QTimer(self, singleShot=True, interval=PREBUILD_DELAY_MS)
         self._prebuild_timer.timeout.connect(self._prebuild)
+        # Changes made outside (command line, agent) show up in the journal (#85).
+        self._last_change_id = self._latest_change_id()
+        self._outside_timer = QTimer(self, interval=OUTSIDE_POLL_MS)
+        self._outside_timer.timeout.connect(self._poll_outside_changes)
+        self._outside_timer.start()
+        self._note_timer = QTimer(self, singleShot=True, interval=OUTSIDE_NOTE_MS)
+        self._note_timer.timeout.connect(self._clear_note)
         self._build_title_bar()  # after the restored page: history starts there
 
     # -- pages, made when they are needed ------------------------------------------
@@ -612,6 +621,8 @@ class MainWindow(QMainWindow):
         # "As in Windows" and Windows switched light / dark: the other symbol
         if event.type() == QEvent.Type.ApplicationPaletteChange and hasattr(self, "theme_button"):
             self._update_theme_button()
+        elif event.type() == QEvent.Type.ActivationChange and hasattr(self, "_outside_timer"):
+            QTimer.singleShot(0, self._activation_changed)
         super().changeEvent(event)
 
     # -- actions ---------------------------------------------------------------
@@ -899,6 +910,88 @@ class MainWindow(QMainWindow):
             .replace("%2", str(self.app.settings.db_path))
             .replace("%3", str(self.app.settings.config_dir)),
         )
+
+    # -- changes made outside the window ---------------------------------------
+
+    def _latest_change_id(self) -> int:
+        """Newest entry of the journal: one cheap query (the poll runs every 2 s)."""
+        from sqlalchemy import func, select
+
+        from hiro_budget.db.models import ChangeLog
+
+        with self.app.session_factory() as s:
+            return s.scalar(select(func.max(ChangeLog.id))) or 0
+
+    def _poll_outside_changes(self) -> None:
+        """Every write of the command line or an agent (imports too) adds a journal entry,
+        the window's own writes do not: a newer entry means data to load."""
+        if not self.isActiveWindow() or QApplication.activeModalWidget() is not None:
+            return
+        try:
+            latest = self._latest_change_id()
+            if latest <= self._last_change_id:
+                return
+            from sqlalchemy import func, select
+
+            from hiro_budget.db.models import ChangeItem, ChangeLog
+
+            with self.app.session_factory() as s:
+                changes = s.scalar(
+                    select(func.count(ChangeLog.id)).where(ChangeLog.id > self._last_change_id)
+                )
+                files = s.scalar(
+                    select(func.count(ChangeItem.id)).where(
+                        ChangeItem.log_id > self._last_change_id, ChangeItem.kind == "file"
+                    )
+                )
+        except Exception:  # a locked or moved database: the next poll tries again
+            logfile.log.debug("poll of the change journal failed", exc_info=True)
+            return
+        self._last_change_id = latest  # asked once, not at every poll
+        self._load_outside_changes(changes or 0, bool(files))
+
+    def _load_outside_changes(self, changes: int, config_changed: bool) -> None:
+        unsaved = self.has_unsaved_changes()
+        if unsaved:
+            answer = QMessageBox.question(
+                self,
+                self.tr("Changes from outside"),
+                self.tr(
+                    "The command line or an agent changed data, and you have unsaved edits. "
+                    "Load the new data and discard your edits? (No: keep my edits.)"
+                ),
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes:
+                self._show_note(self.tr("Changes from outside not loaded (unsaved edits)"))
+                return
+        try:
+            if config_changed:
+                self.app.reload_config()
+        except Exception as e:
+            show_error(self, self.tr("Reload configuration"), e)
+            return
+        if config_changed or unsaved:
+            if (config_view := self._if_built("config_view")) is not None:
+                config_view.categories.load()
+                config_view.rules.load()
+            if unsaved and (accounts := self._if_built("accounts")) is not None:
+                accounts.load()
+        self.refresh_all()
+        self._show_note(self.tr("%n change(s) by the command line or an agent loaded", "", changes))
+
+    def _show_note(self, text: str) -> None:
+        self.show_status(text)
+        self._note_timer.start()
+
+    def _clear_note(self) -> None:
+        self.show_status("")
+
+    def _activation_changed(self) -> None:
+        """Back in the window: look for changes at once instead of at the next tick."""
+        if self.isActiveWindow():
+            self._poll_outside_changes()
 
     # -- refresh plumbing ------------------------------------------------------
 

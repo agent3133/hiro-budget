@@ -118,7 +118,7 @@ def test_a_broken_manifest_skips_only_its_plugin(builtin):
     importer_plugin(folder, "good")
     write_plugin(folder, "typo", "name: typo\nversion: '1'\napi: 2\nimporter: []\n")
     write_plugin(folder, "renamed", "name: other\nversion: '1'\napi: 2\n")
-    write_plugin(folder, "future", "name: future\nversion: '1'\napi: 3\n")
+    write_plugin(folder, "future", "name: future\nversion: '1'\napi: 99\n")
     write_plugin(
         folder, "noformat", "name: noformat\nversion: '1'\napi: 2\nformats: [x.csv.yaml]\n"
     )
@@ -128,7 +128,7 @@ def test_a_broken_manifest_skips_only_its_plugin(builtin):
     problems = dict(reg.problems())
     assert "Extra inputs are not permitted" in problems["typo"]
     assert "differs from its folder" in problems["renamed"]
-    assert "plugin API 3 is not supported" in problems["future"]
+    assert "plugin API 99 is not supported" in problems["future"]
     assert "missing format files: x.csv.yaml" in problems["noformat"]
     assert "plugin.yaml" in problems["badyaml"]
 
@@ -496,3 +496,100 @@ def test_the_app_migrates_at_start(config_dir):
     App.from_config_dir(config_dir)
     assert (config_dir / "csv_formats.yaml.migrated").is_file()
     assert (config_dir / "plugins" / "my_bank_csv" / "plugin.yaml").is_file()
+
+
+# -- frontends: commands of the command line (API 3, #84) --------------------------------
+
+FRONTEND = """
+class DemoFrontend:
+    command = "{command}"
+    help = "a demo command"
+
+    def add_arguments(self, parser):
+        parser.add_argument("--loud", action="store_true")
+
+    def run(self, args, operations):
+        return 0
+"""
+FRONTEND_MANIFEST = (
+    "name: {0}\nversion: '1'\napi: {1}\nfrontends:\n  - {{module: front, class: {2}}}\n"
+)
+
+
+def test_frontend_plugin(builtin, tmp_path):
+    user = tmp_path / "user"
+    write_plugin(
+        user,
+        "demo_cmd",
+        FRONTEND_MANIFEST.format("demo_cmd", 3, "DemoFrontend"),
+        {"front.py": FRONTEND.format(command="mine")},
+    )
+    reg = discover(user, builtin)
+    assert status(reg)["demo_cmd"] == ("user", "disabled")
+    assert reg.frontends() == []  # code of a user plugin: only once it is enabled
+
+    reg = discover(user, builtin, enabled=["demo_cmd"])
+    (frontend,) = reg.frontends()
+    assert frontend.command == "mine"
+
+
+def test_frontends_need_api_3(builtin, tmp_path):
+    user = tmp_path / "user"
+    write_plugin(
+        user,
+        "old_api",
+        FRONTEND_MANIFEST.format("old_api", 2, "DemoFrontend"),
+        {"front.py": FRONTEND.format(command="old")},
+    )
+    reg = discover(user, builtin, enabled=["old_api"])
+    assert dict(reg.problems())["old_api"] == "frontends need plugin API 3"
+    assert reg.frontends() == []
+
+
+def test_a_command_of_a_builtin_is_a_problem_of_the_plugin(builtin, tmp_path):
+    folder, _ = builtin
+    write_plugin(
+        folder,
+        "clash",
+        FRONTEND_MANIFEST.format("clash", 3, "DemoFrontend"),
+        {"front.py": FRONTEND.format(command="gui")},
+    )
+    write_plugin(
+        folder,
+        "fine",
+        FRONTEND_MANIFEST.format("fine", 3, "DemoFrontend"),
+        {"front.py": FRONTEND.format(command="fine")},
+    )
+    write_plugin(
+        folder,
+        "second_fine",
+        FRONTEND_MANIFEST.format("second_fine", 3, "DemoFrontend"),
+        {"front.py": FRONTEND.format(command="fine")},  # the same command: the first wins
+    )
+    reg = discover(None, builtin)
+    found = reg.frontends(reserved={"gui", "import"})
+    assert [f.command for f in found] == ["fine"]
+    problems = dict(reg.problems())
+    assert "the command 'gui' exists already" in problems["clash"]
+    assert "the command 'fine' exists already" in problems["second_fine"]
+
+
+def test_a_broken_frontend_is_a_problem_of_the_plugin(builtin, tmp_path):
+    folder, _ = builtin
+    write_plugin(
+        folder,
+        "broken_cmd",
+        FRONTEND_MANIFEST.format("broken_cmd", 3, "Missing"),
+        {"front.py": FRONTEND.format(command="x")},
+    )
+    reg = discover(None, builtin)
+    assert reg.frontends() == []
+    assert "frontend front:Missing" in dict(reg.problems())["broken_cmd"]
+
+
+def test_the_mcp_plugin_is_builtin():
+    reg = plugins.registry(None)
+    assert status(reg)["mcp"] == ("builtin", "available")
+    (frontend,) = [f for f in reg.frontends() if f.command == "mcp"]
+    assert frontend.source == "mcp"
+    assert reg.get("mcp").spec.api == 3

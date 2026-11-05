@@ -19,9 +19,25 @@ def _setup_logging(settings: Settings) -> None:
     )
 
 
-def build_parser() -> argparse.ArgumentParser:
+OWN_COMMANDS = frozenset({"gui", "import", "recategorize", "train", "demo", "dump-pdf"})
+
+
+def build_parser(frontends=()) -> argparse.ArgumentParser:
+    """``frontends``: the command objects of plugins (API 3), see ``plugin_api``."""
+    return _build(frontends)[0]
+
+
+def _build(frontends=(), with_ops=True) -> tuple[argparse.ArgumentParser, argparse.Action]:
+    """``with_ops=False``: only the commands of this file (the operations' commands need
+    their modules: ~0.1 s that ``gui`` and ``import`` do not pay)."""
     p = argparse.ArgumentParser(prog="hiro-budget", description=__doc__)
     p.add_argument("--config-dir", type=Path, help="directory with config.yaml (default ./config)")
+    p.add_argument(
+        "--json",
+        dest="json_output",
+        action="store_true",
+        help="print the result of a command as JSON (also after the command)",
+    )
     sub = p.add_subparsers(dest="command")
     sub.add_parser("gui", help="start the graphical interface (default)")
     imp = sub.add_parser("import", help="import statement files or folders")
@@ -29,10 +45,19 @@ def build_parser() -> argparse.ArgumentParser:
     imp.add_argument(
         "--on-overlap",
         choices=["add", "overwrite", "cancel"],
-        help="how to handle statements overlapping stored bookings (default: ask)",
+        help="how to handle statements overlapping stored bookings (default: ask; "
+        "with --json: cancel)",
     )
-    sub.add_parser("recategorize", help="re-run categorization on all non-manual bookings")
-    sub.add_parser("train", help="retrain the ML classifier")
+    recat = sub.add_parser("recategorize", help="re-run categorization on all non-manual bookings")
+    train = sub.add_parser("train", help="retrain the ML classifier")
+    for command in (imp, recat, train):  # not ops.cli's helper: the window loads no ops
+        command.add_argument(
+            "--json",
+            dest="json_output",
+            action="store_true",
+            default=argparse.SUPPRESS,  # keeps a --json given before the command
+            help="print the result as JSON",
+        )
     sub.add_parser(
         "demo", help="open the app on a fictional family's data (nothing of yours is used)"
     )
@@ -51,7 +76,36 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="replace IBANs, e-mail addresses and long numbers (names: replace by hand)",
     )
-    return p
+    if with_ops:
+        from hiro_budget.ops.cli import add_commands
+
+        add_commands(sub)  # the commands generated from the operations (#83)
+    for frontend in frontends:  # commands of plugins (#84)
+        command = sub.add_parser(frontend.command, help=frontend.help)
+        frontend.add_arguments(command)
+        command.set_defaults(_frontend=frontend)
+    return p, sub
+
+
+def _first_command(argv: list[str]) -> str | None:
+    """The first word that is not an option (or the value of ``--config-dir``)."""
+    skip = False
+    for word in argv:
+        if skip:
+            skip = False
+        elif word == "--config-dir":
+            skip = True
+        elif not word.startswith("-"):
+            return word
+    return None
+
+
+def _frontends(settings: Settings | None):
+    """Frontends of the plugins; a name of a built-in command is a problem of the plugin."""
+    from hiro_budget.importers import plugins
+
+    _, sub = _build()
+    return plugins.of(settings).frontends(reserved=set(sub.choices))  # type: ignore[attr-defined]
 
 
 def cmd_dump_pdf(path: Path, x_tolerance: float, masked: bool) -> int:
@@ -149,8 +203,20 @@ def _print_outcome(f) -> None:
                 print(f"  warning: {w}")
 
 
-def cmd_import(settings: Settings, paths: list[Path], on_overlap: str | None) -> int:
+def cmd_import(
+    settings: Settings, paths: list[Path], on_overlap: str | None, as_json: bool = False
+) -> int:
+    """The import with its interactive overlap question; journaled as ``import_files``
+    like every change of the command line (the open window loads it, #85). With ``--json``
+    the operation itself runs: no questions, an overlap is skipped unless ``--on-overlap``."""
+    if as_json:
+        from hiro_budget.ops.cli import run_named
+
+        args = {"paths": [str(p) for p in paths], "on_overlap": on_overlap or "cancel"}
+        return run_named(settings, "import_files", args, as_json=True)
+
     from hiro_budget.app import App
+    from hiro_budget.ops import OpContext
     from hiro_budget.services.categorization.pipeline import train_classifier
     from hiro_budget.services.import_batch import import_files
     from hiro_budget.services.import_service import OverlapMode
@@ -169,48 +235,40 @@ def cmd_import(settings: Settings, paths: list[Path], on_overlap: str | None) ->
         return True
 
     app = App(settings)
-    batch = import_files(
-        app.session,
-        settings,
-        _collect_files(paths),
-        decide,
-        backup_failed=backup_failed,
-        on_preview=_print_preview,
-        on_done=_print_outcome,
-    )
-    if batch.backup is not None:
-        print(f"backup: {batch.backup}")
-    if batch.imported_any and settings.app.ml.enabled:
-        with app.session() as s:
-            clf = train_classifier(s, settings)
-        if clf is not None:
-            print(f"classifier trained on {clf.n_samples} bookings")
+    ctx = OpContext(app, source="cli")
+    with ctx.write("import_files"):  # the import makes its own backup
+        batch = import_files(
+            app.session,
+            settings,
+            _collect_files(paths),
+            decide,
+            backup_failed=backup_failed,
+            on_preview=_print_preview,
+            on_done=_print_outcome,
+        )
+        if batch.backup is not None:
+            print(f"backup: {batch.backup}")
+        if batch.imported_any and settings.app.ml.enabled:
+            with app.session() as s:
+                clf = train_classifier(s, settings)
+            if clf is not None:
+                print(f"classifier trained on {clf.n_samples} bookings")
     return 1 if batch.count("failed") else 0
 
 
-def cmd_recategorize(settings: Settings) -> int:
-    from hiro_budget.app import App
-    from hiro_budget.services.categorization.pipeline import recategorize_all
-
-    app = App(settings)
-    with app.session() as s:
-        stats = recategorize_all(s, settings)
-    print(f"categorization: {stats}")
-    return 0
+def cmd_recategorize(settings: Settings, as_json: bool = False) -> int:
+    return _run_op(settings, "recategorize", as_json)
 
 
-def cmd_train(settings: Settings) -> int:
-    from hiro_budget.app import App
-    from hiro_budget.services.categorization.pipeline import train_classifier
+def cmd_train(settings: Settings, as_json: bool = False) -> int:
+    return _run_op(settings, "train", as_json)
 
-    app = App(settings)
-    with app.session() as s:
-        clf = train_classifier(s, settings)
-    if clf is None:
-        print(f"not enough training data (need {settings.app.ml.min_samples} categorized bookings)")
-        return 1
-    print(f"classifier trained on {clf.n_samples} bookings -> {settings.model_path}")
-    return 0
+
+def _run_op(settings: Settings, name: str, as_json: bool) -> int:
+    """An operation without a generated command: the same path as the generated ones."""
+    from hiro_budget.ops.cli import run_named
+
+    return run_named(settings, name, {}, as_json)
 
 
 def cmd_gui(settings: Settings) -> int:
@@ -232,8 +290,47 @@ def _show_config_error(message: str) -> None:
     del qapp
 
 
+def _parse(argv: list[str]) -> argparse.Namespace:
+    """Parse the command line. The commands of plugins are looked up only for a word that
+    is no built-in command (and to list them in ``--help``): the built-in commands never
+    load the plugin registry, and the start of the window (no command) or of an import does
+    not build the commands of the operations either."""
+    command = _first_command(argv)
+    helping = any(w in ("-h", "--help") for w in argv)
+    if command in OWN_COMMANDS or (command is None and not helping):
+        return _build(with_ops=False)[0].parse_args(argv)
+    parser, sub = _build()
+    frontends = []
+    if command is not None and command not in sub.choices:  # type: ignore[attr-defined]
+        pre = argparse.ArgumentParser(add_help=False)
+        pre.add_argument("--config-dir", type=Path)
+        known, _ = pre.parse_known_args(argv)
+        try:
+            frontends = _frontends(load_settings(known.config_dir))
+        except ConfigError:
+            frontends = []  # the unknown command is reported below; the config error later
+    elif command is None:  # --help of the whole program
+        frontends = _frontends(None)  # only the manifests of the built-in plugins
+    return build_parser(frontends).parse_args(argv)
+
+
+def _run_frontend(settings: Settings, args: argparse.Namespace) -> int:
+    import re
+
+    from hiro_budget import logfile, plugin_api
+
+    logging.getLogger("alembic").setLevel(logging.WARNING)  # no migration chatter
+    # warnings and errors (with traceback) also to the app's log file: the stderr of a
+    # server started by an agent is often not kept
+    logfile.open_log_file(settings)
+    frontend = args._frontend
+    source = re.sub("[^a-z]", "", str(getattr(frontend, "source", frontend.command)).lower())
+    operations = plugin_api.Operations.create(settings, source[:10] or "plugin")
+    return frontend.run(args, operations)
+
+
 def main(argv: list[str] | None = None) -> int:
-    args = build_parser().parse_args(argv)
+    args = _parse(list(sys.argv[1:] if argv is None else argv))
     if args.command == "dump-pdf":  # needs no configuration
         return cmd_dump_pdf(args.path, args.x_tolerance, args.mask)
     if args.command == "demo":  # its own configuration, a fresh copy every time
@@ -254,13 +351,19 @@ def main(argv: list[str] | None = None) -> int:
             _show_config_error(str(e))
         return 2
     _setup_logging(settings)
+    if hasattr(args, "_frontend"):  # a command of a plugin (API 3)
+        return _run_frontend(settings, args)
+    if hasattr(args, "_operation"):  # a command of the operations layer
+        from hiro_budget.ops.cli import run_operation
+
+        return run_operation(settings, args)
     match args.command:
         case "import":
-            return cmd_import(settings, args.paths, args.on_overlap)
+            return cmd_import(settings, args.paths, args.on_overlap, args.json_output)
         case "recategorize":
-            return cmd_recategorize(settings)
+            return cmd_recategorize(settings, args.json_output)
         case "train":
-            return cmd_train(settings)
+            return cmd_train(settings, args.json_output)
         case _:
             return cmd_gui(settings)
 

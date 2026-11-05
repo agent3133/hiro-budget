@@ -1555,32 +1555,32 @@ Die zugewiesenen Beträge der Gruppe (alle Monate) gehen an ihre erste Kategorie
 <context>
     <name>CategoryEditor</name>
     <message>
-        <location filename="../gui/config_view.py" line="150" />
+        <location filename="../gui/config_view.py" line="134" />
         <source>Name</source>
         <extracomment>unsaved changes appeared (True) or were saved / discarded (False)</extracomment>
         <translation>Name</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="151" />
+        <location filename="../gui/config_view.py" line="135" />
         <source>Key</source>
         <translation>Schlüssel</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="154" />
+        <location filename="../gui/config_view.py" line="138" />
         <source>Income</source>
         <comment>column header, may have two lines</comment>
         <translation>Ein-
 nahmen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="155" />
+        <location filename="../gui/config_view.py" line="139" />
         <source>One-off</source>
         <comment>column header, may have two lines</comment>
         <translation>Ein-
 malig</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="156" />
+        <location filename="../gui/config_view.py" line="140" />
         <source>Report
 month</source>
         <comment>column header, may have two lines</comment>
@@ -1588,60 +1588,60 @@ month</source>
 monat</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="162" />
+        <location filename="../gui/config_view.py" line="146" />
         <source>In the reports, bookings up to this day of a month count for the previous month, e.g. 5 for an instalment due at the end of the month but debited on the 1st. Empty: the booking date counts. Double-click to change.</source>
         <translation>In den Berichten zählen Buchungen bis zu diesem Tag eines Monats zum Vormonat, z. B. 5 für eine Rate, die zum Monatsende fällig ist, aber erst am 1. abgebucht wird. Leer: Es zählt das Buchungsdatum. Doppelklick zum Ändern.</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="171" />
+        <location filename="../gui/config_view.py" line="155" />
         <source>Irregular income or expenses (bonus, tax refund, repairs): the reports can leave them out</source>
         <translation>Unregelmäßige Einnahmen oder Ausgaben (Bonus, Steuererstattung, Reparaturen): die Berichte können sie weglassen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="186" />
-        <location filename="../gui/config_view.py" line="187" />
+        <location filename="../gui/config_view.py" line="170" />
+        <location filename="../gui/config_view.py" line="171" />
         <source>Add group</source>
         <translation>Gruppe hinzufügen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="189" />
-        <location filename="../gui/config_view.py" line="190" />
+        <location filename="../gui/config_view.py" line="173" />
+        <location filename="../gui/config_view.py" line="174" />
         <source>Add category</source>
         <translation>Kategorie hinzufügen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="194" />
+        <location filename="../gui/config_view.py" line="178" />
         <source>Up</source>
         <translation>Nach oben</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="194" />
+        <location filename="../gui/config_view.py" line="178" />
         <source>Down</source>
         <translation>Nach unten</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="194" />
+        <location filename="../gui/config_view.py" line="178" />
         <source>Remove</source>
         <translation>Entfernen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="200" />
-        <location filename="../gui/config_view.py" line="482" />
+        <location filename="../gui/config_view.py" line="184" />
+        <location filename="../gui/config_view.py" line="466" />
         <source>Save categories</source>
         <translation>Kategorien speichern</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="203" />
+        <location filename="../gui/config_view.py" line="187" />
         <source>Revert</source>
         <translation>Verwerfen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="323" />
+        <location filename="../gui/config_view.py" line="307" />
         <source>New group</source>
         <translation>Neue Gruppe</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="334" />
+        <location filename="../gui/config_view.py" line="318" />
         <source>New category</source>
         <translation>Neue Kategorie</translation>
     </message>
@@ -1649,17 +1649,17 @@ monat</translation>
 <context>
     <name>ConfigView</name>
     <message>
-        <location filename="../gui/config_view.py" line="920" />
+        <location filename="../gui/config_view.py" line="904" />
         <source>Categories</source>
         <translation>Kategorien</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="922" />
+        <location filename="../gui/config_view.py" line="906" />
         <source>Rules</source>
         <translation>Regeln</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="931" />
+        <location filename="../gui/config_view.py" line="915" />
         <source>Categories &amp; rules</source>
         <translation>Kategorien &amp; Regeln</translation>
     </message>
@@ -2877,44 +2877,44 @@ Trotzdem importieren?</translation>
 <context>
     <name>MainWindow</name>
     <message>
-        <location filename="../gui/main_window.py" line="82" />
+        <location filename="../gui/main_window.py" line="84" />
         <source>Hiro Budget</source>
         <translation>Hiro Budget</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="93" />
+        <location filename="../gui/main_window.py" line="95" />
         <source>Overview</source>
         <translation>Übersicht</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="94" />
+        <location filename="../gui/main_window.py" line="96" />
         <source>Budget</source>
         <translation>Budget</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="96" />
-        <location filename="../gui/main_window.py" line="446" />
+        <location filename="../gui/main_window.py" line="98" />
+        <location filename="../gui/main_window.py" line="455" />
         <source>Accounts</source>
         <translation>Konten</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="97" />
+        <location filename="../gui/main_window.py" line="99" />
         <source>Reports</source>
         <translation>Berichte</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="98" />
+        <location filename="../gui/main_window.py" line="100" />
         <source>Categories &amp; Rules</source>
         <translation>Kategorien &amp; Regeln</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="240" />
-        <location filename="../gui/main_window.py" line="244" />
+        <location filename="../gui/main_window.py" line="249" />
+        <location filename="../gui/main_window.py" line="253" />
         <source>Backup</source>
         <translation>Sicherung</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="246" />
+        <location filename="../gui/main_window.py" line="255" />
         <source>Database and configuration saved in
 %1
 
@@ -2925,190 +2925,214 @@ To restore, close the app and copy the files back.</source>
 Zum Wiederherstellen die App schließen und die Dateien zurückkopieren.</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="334" />
+        <location filename="../gui/main_window.py" line="343" />
         <source>Back</source>
         <translation>Zurück</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="336" />
+        <location filename="../gui/main_window.py" line="345" />
         <source>Forward</source>
         <translation>Vor</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="347" />
+        <location filename="../gui/main_window.py" line="356" />
         <source>Search pages, commands, accounts, bookings…</source>
         <translation>Seiten, Befehle, Konten, Buchungen suchen…</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="357" />
+        <location filename="../gui/main_window.py" line="366" />
         <source>Unsaved</source>
         <translation>Ungespeichert</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="376" />
+        <location filename="../gui/main_window.py" line="385" />
         <source>Import</source>
         <translation>Importieren</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="429" />
+        <location filename="../gui/main_window.py" line="438" />
         <source>Pages</source>
         <translation>Seiten</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="437" />
+        <location filename="../gui/main_window.py" line="446" />
         <source>Commands</source>
         <translation>Befehle</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="462" />
+        <location filename="../gui/main_window.py" line="471" />
         <source>Categories</source>
         <translation>Kategorien</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="95" />
-        <location filename="../gui/main_window.py" line="479" />
+        <location filename="../gui/main_window.py" line="97" />
+        <location filename="../gui/main_window.py" line="488" />
         <source>Bookings</source>
         <translation>Buchungen</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="493" />
+        <location filename="../gui/main_window.py" line="502" />
         <source>Show all %1 bookings with “%2”</source>
         <translation>Alle %1 Buchungen mit „%2“ anzeigen</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="541" />
+        <location filename="../gui/main_window.py" line="550" />
         <source>categories</source>
         <translation>Kategorien</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="542" />
+        <location filename="../gui/main_window.py" line="551" />
         <source>rules</source>
         <translation>Regeln</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="545" />
+        <location filename="../gui/main_window.py" line="554" />
         <source>accounts</source>
         <translation>Konten</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="547" />
+        <location filename="../gui/main_window.py" line="556" />
         <source>split</source>
         <translation>Aufteilung</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="562" />
+        <location filename="../gui/main_window.py" line="571" />
         <source>Unsaved changes: %1. Click to save them.</source>
         <translation>Ungespeicherte Änderungen: %1. Klicken zum Speichern.</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="582" />
+        <location filename="../gui/main_window.py" line="591" />
         <source>Import statements</source>
         <translation>Kontoauszüge importieren</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="586" />
+        <location filename="../gui/main_window.py" line="595" />
         <source>New in the import folder:</source>
         <translation>Neu im Import-Ordner:</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="608" />
+        <location filename="../gui/main_window.py" line="617" />
         <source>Switch to light mode</source>
         <translation>Zum hellen Modus wechseln</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="608" />
+        <location filename="../gui/main_window.py" line="617" />
         <source>Switch to dark mode</source>
         <translation>Zum dunklen Modus wechseln</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="670" />
+        <location filename="../gui/main_window.py" line="681" />
         <source>Excel (*.xlsx)</source>
         <translation>Excel (*.xlsx)</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="670" />
+        <location filename="../gui/main_window.py" line="681" />
         <source>CSV (*.csv)</source>
         <translation>CSV (*.csv)</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="673" />
-        <location filename="../gui/main_window.py" line="685" />
-        <location filename="../gui/main_window.py" line="697" />
-        <location filename="../gui/main_window.py" line="713" />
+        <location filename="../gui/main_window.py" line="684" />
+        <location filename="../gui/main_window.py" line="696" />
+        <location filename="../gui/main_window.py" line="708" />
+        <location filename="../gui/main_window.py" line="724" />
         <source>Export</source>
         <translation>Export</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="686" />
+        <location filename="../gui/main_window.py" line="697" />
         <source>Exported to:</source>
         <translation>Exportiert nach:</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="722" />
-        <location filename="../gui/main_window.py" line="725" />
+        <location filename="../gui/main_window.py" line="733" />
+        <location filename="../gui/main_window.py" line="736" />
         <source>Categorization</source>
         <translation>Kategorisierung</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="733" />
-        <location filename="../gui/main_window.py" line="745" />
-        <location filename="../gui/main_window.py" line="753" />
+        <location filename="../gui/main_window.py" line="744" />
+        <location filename="../gui/main_window.py" line="756" />
+        <location filename="../gui/main_window.py" line="764" />
         <source>Classifier</source>
         <translation>Klassifikator</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="746" />
+        <location filename="../gui/main_window.py" line="757" />
         <source>Not enough categorized bookings yet (minimum: %1).</source>
         <translation>Noch nicht genug kategorisierte Buchungen (Minimum: %1).</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="754" />
+        <location filename="../gui/main_window.py" line="765" />
         <source>Classifier trained on %1 bookings. Re-run categorization now?</source>
         <translation>Klassifikator mit %1 Buchungen trainiert. Kategorisierung jetzt neu ausführen?</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="766" />
-        <location filename="../gui/main_window.py" line="774" />
+        <location filename="../gui/main_window.py" line="777" />
+        <location filename="../gui/main_window.py" line="785" />
+        <location filename="../gui/main_window.py" line="973" />
         <source>Reload configuration</source>
         <translation>Konfiguration neu laden</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="767" />
+        <location filename="../gui/main_window.py" line="778" />
         <source>Discard unsaved changes in the category/rule editor?</source>
         <translation>Ungespeicherte Änderungen im Kategorie-/Regel-Editor verwerfen?</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="787" />
+        <location filename="../gui/main_window.py" line="798" />
         <source>Language</source>
         <translation>Sprache</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="788" />
+        <location filename="../gui/main_window.py" line="799" />
         <source>The language will change after restarting the application.</source>
         <translation>Die Sprache wird nach einem Neustart der Anwendung umgestellt.</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="796" />
+        <location filename="../gui/main_window.py" line="807" />
         <source>Appearance</source>
         <translation>Erscheinungsbild</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="892" />
+        <location filename="../gui/main_window.py" line="903" />
         <source>About</source>
         <translation>Über</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="894" />
+        <location filename="../gui/main_window.py" line="905" />
         <source>&lt;b&gt;Hiro Budget&lt;/b&gt; %1&lt;br&gt;&lt;br&gt;Imports bank statements, categorizes bookings and reports income and expenses.&lt;br&gt;&lt;br&gt;Database: %2&lt;br&gt;Configuration: %3</source>
         <translation>&lt;b&gt;Hiro Budget&lt;/b&gt; %1&lt;br&gt;&lt;br&gt;Importiert Kontoauszüge, kategorisiert Buchungen und wertet Einnahmen und Ausgaben aus.&lt;br&gt;&lt;br&gt;Datenbank: %2&lt;br&gt;Konfiguration: %3</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="995" />
+        <location filename="../gui/main_window.py" line="958" />
+        <source>Changes from outside</source>
+        <translation>Änderungen von außen</translation>
+    </message>
+    <message>
+        <location filename="../gui/main_window.py" line="960" />
+        <source>The command line or an agent changed data, and you have unsaved edits. Load the new data and discard your edits? (No: keep my edits.)</source>
+        <translation>Die Befehlszeile oder ein Agent hat Daten geändert, und es gibt ungespeicherte Änderungen. Die neuen Daten laden und die Änderungen verwerfen? (Nein: Änderungen behalten.)</translation>
+    </message>
+    <message>
+        <location filename="../gui/main_window.py" line="967" />
+        <source>Changes from outside not loaded (unsaved edits)</source>
+        <translation>Änderungen von außen nicht geladen (ungespeicherte Änderungen)</translation>
+    </message>
+    <message numerus="yes">
+        <location filename="../gui/main_window.py" line="982" />
+        <source>%n change(s) by the command line or an agent loaded</source>
+        <translation>
+            <numerusform>%n Änderung von der Befehlszeile oder einem Agenten geladen</numerusform>
+            <numerusform>%n Änderungen von der Befehlszeile oder einem Agenten geladen</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../gui/main_window.py" line="1088" />
         <source>Unsaved changes</source>
         <translation>Ungespeicherte Änderungen</translation>
     </message>
     <message>
-        <location filename="../gui/main_window.py" line="996" />
+        <location filename="../gui/main_window.py" line="1089" />
         <source>There are unsaved changes (%1). Quit anyway?</source>
         <translation>Es gibt ungespeicherte Änderungen (%1). Trotzdem beenden?</translation>
     </message>
@@ -3714,7 +3738,7 @@ Zum Wiederherstellen die App schließen und die Dateien zurückkopieren.</transl
     <name>PluginsDialog</name>
     <message>
         <location filename="../gui/plugins_dialog.py" line="32" />
-        <location filename="../gui/plugins_dialog.py" line="209" />
+        <location filename="../gui/plugins_dialog.py" line="211" />
         <source>Plugins</source>
         <translation>Plugins</translation>
     </message>
@@ -3787,58 +3811,66 @@ Zum Wiederherstellen die App schließen und die Dateien zurückkopieren.</transl
             <numerusform>%n Bankverbindungen</numerusform>
         </translation>
     </message>
-    <message>
+    <message numerus="yes">
         <location filename="../gui/plugins_dialog.py" line="109" />
+        <source>%n command(s)</source>
+        <translation>
+            <numerusform>%n Befehl</numerusform>
+            <numerusform>%n Befehle</numerusform>
+        </translation>
+    </message>
+    <message>
+        <location filename="../gui/plugins_dialog.py" line="111" />
         <source>library</source>
         <translation>Bibliothek</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="114" />
+        <location filename="../gui/plugins_dialog.py" line="116" />
         <source>active</source>
         <translation>aktiv</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="115" />
+        <location filename="../gui/plugins_dialog.py" line="117" />
         <source>off: contains program code</source>
         <translation>aus: enthält Programmcode</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="116" />
+        <location filename="../gui/plugins_dialog.py" line="118" />
         <source>replaced by your plugin of this name</source>
         <translation>ersetzt durch dein Plugin dieses Namens</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="117" />
+        <location filename="../gui/plugins_dialog.py" line="119" />
         <source>error: %1</source>
         <translation>Fehler: %1</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="135" />
+        <location filename="../gui/plugins_dialog.py" line="137" />
         <source>Enable to let this plugin's program code run</source>
         <translation>Einschalten, damit der Programmcode dieses Plugins läuft</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="136" />
+        <location filename="../gui/plugins_dialog.py" line="138" />
         <source>built-in</source>
         <translation>eingebaut</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="136" />
+        <location filename="../gui/plugins_dialog.py" line="138" />
         <source>own</source>
         <translation>eigenes</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="167" />
+        <location filename="../gui/plugins_dialog.py" line="169" />
         <source>Requires: %1</source>
         <translation>Benötigt: %1</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="194" />
+        <location filename="../gui/plugins_dialog.py" line="196" />
         <source>Enable plugins</source>
         <translation>Plugins einschalten</translation>
     </message>
     <message>
-        <location filename="../gui/plugins_dialog.py" line="196" />
+        <location filename="../gui/plugins_dialog.py" line="198" />
         <source>Enable %1? A plugin with program code runs with the rights of the app: it can read your bookings and files. Only enable plugins you trust.</source>
         <translation>%1 einschalten? Ein Plugin mit Programmcode läuft mit den Rechten der App: es kann deine Buchungen und Dateien lesen. Schalte nur Plugins ein, denen du vertraust.</translation>
     </message>
@@ -4464,8 +4496,8 @@ Zum Wiederherstellen die App schließen und die Dateien zurückkopieren.</transl
     <name>RestoreDialog</name>
     <message>
         <location filename="../gui/restore_dialog.py" line="33" />
-        <location filename="../gui/restore_dialog.py" line="114" />
-        <location filename="../gui/restore_dialog.py" line="125" />
+        <location filename="../gui/restore_dialog.py" line="116" />
+        <location filename="../gui/restore_dialog.py" line="127" />
         <source>Restore backup</source>
         <translation>Sicherung wiederherstellen</translation>
     </message>
@@ -4510,17 +4542,27 @@ Zum Wiederherstellen die App schließen und die Dateien zurückkopieren.</transl
         <translation>vor einer Wiederherstellung</translation>
     </message>
     <message>
-        <location filename="../gui/restore_dialog.py" line="77" />
+        <location filename="../gui/restore_dialog.py" line="54" />
+        <source>before a change by the command line</source>
+        <translation>vor einer Änderung per Befehlszeile</translation>
+    </message>
+    <message>
+        <location filename="../gui/restore_dialog.py" line="55" />
+        <source>before a change by an agent</source>
+        <translation>vor einer Änderung durch einen Agenten</translation>
+    </message>
+    <message>
+        <location filename="../gui/restore_dialog.py" line="79" />
         <source>There are no backups yet.</source>
         <translation>Es gibt noch keine Sicherungen.</translation>
     </message>
     <message>
-        <location filename="../gui/restore_dialog.py" line="79" />
+        <location filename="../gui/restore_dialog.py" line="81" />
         <source>Restore…</source>
         <translation>Wiederherstellen…</translation>
     </message>
     <message>
-        <location filename="../gui/restore_dialog.py" line="116" />
+        <location filename="../gui/restore_dialog.py" line="118" />
         <source>Restore the backup of %1? Bookings, budget, categories and rules changed since then are replaced. The current state is backed up first.</source>
         <translation>Die Sicherung vom %1 wiederherstellen? Buchungen, Budget, Kategorien und Regeln, die seitdem geändert wurden, werden ersetzt. Vorher wird der aktuelle Stand gesichert.</translation>
     </message>
@@ -4528,186 +4570,186 @@ Zum Wiederherstellen die App schließen und die Dateien zurückkopieren.</transl
 <context>
     <name>RuleEditor</name>
     <message>
-        <location filename="../gui/config_view.py" line="559" />
-        <location filename="../gui/config_view.py" line="560" />
+        <location filename="../gui/config_view.py" line="543" />
+        <location filename="../gui/config_view.py" line="544" />
         <source>New rule</source>
         <translation>Neue Regel</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="563" />
+        <location filename="../gui/config_view.py" line="547" />
         <source>Up</source>
         <translation>Nach oben</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="563" />
+        <location filename="../gui/config_view.py" line="547" />
         <source>Down</source>
         <translation>Nach unten</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="563" />
+        <location filename="../gui/config_view.py" line="547" />
         <source>Remove</source>
         <translation>Entfernen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="577" />
+        <location filename="../gui/config_view.py" line="561" />
         <source>Rule id</source>
         <translation>Regel-ID</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="578" />
+        <location filename="../gui/config_view.py" line="562" />
         <source>Category</source>
         <translation>Kategorie</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="580" />
+        <location filename="../gui/config_view.py" line="564" />
         <source>Regex on counterparty, e.g. (?i)vodafone</source>
         <translation>Regex auf Gegenpartei, z. B. (?i)vodafone</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="581" />
+        <location filename="../gui/config_view.py" line="565" />
         <source>Regex on card/PayPal merchant, e.g. (?i)rewe|aldi</source>
         <translation>Regex auf Karten-/PayPal-Händler, z. B. (?i)rewe|aldi</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="582" />
+        <location filename="../gui/config_view.py" line="566" />
         <source>Regex on purpose text</source>
         <translation>Regex auf Verwendungszweck</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="583" />
+        <location filename="../gui/config_view.py" line="567" />
         <source>Regex on booking type, e.g. ^Gehalt/Rente$</source>
         <translation>Regex auf Buchungsart, z. B. ^Gehalt/Rente$</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="584" />
+        <location filename="../gui/config_view.py" line="568" />
         <source>Regex on PayPal payee and article</source>
         <translation>Regex auf Empfänger und Artikel bei PayPal</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="585" />
+        <location filename="../gui/config_view.py" line="569" />
         <source>Regex on own account name</source>
         <translation>Regex auf eigenen Kontonamen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="586" />
-        <location filename="../gui/config_view.py" line="587" />
+        <location filename="../gui/config_view.py" line="570" />
+        <location filename="../gui/config_view.py" line="571" />
         <source>EUR, negative = outgoing</source>
         <translation>EUR, negativ = Ausgang</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="590" />
+        <location filename="../gui/config_view.py" line="574" />
         <source>Counterparty</source>
         <translation>Gegenpartei</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="591" />
+        <location filename="../gui/config_view.py" line="575" />
         <source>Merchant</source>
         <translation>Händler</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="592" />
+        <location filename="../gui/config_view.py" line="576" />
         <source>Purpose</source>
         <translation>Verwendungszweck</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="593" />
+        <location filename="../gui/config_view.py" line="577" />
         <source>Booking type</source>
         <translation>Buchungsart</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="594" />
+        <location filename="../gui/config_view.py" line="578" />
         <source>Payment details</source>
         <translation>Zahlungsdetails</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="595" />
+        <location filename="../gui/config_view.py" line="579" />
         <source>Account</source>
         <translation>Konto</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="596" />
+        <location filename="../gui/config_view.py" line="580" />
         <source>Amount from</source>
         <translation>Betrag von</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="597" />
+        <location filename="../gui/config_view.py" line="581" />
         <source>Amount to</source>
         <translation>Betrag bis</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="614" />
+        <location filename="../gui/config_view.py" line="598" />
         <source>Rule</source>
         <translation>Regel</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="621" />
-        <location filename="../gui/config_view.py" line="888" />
+        <location filename="../gui/config_view.py" line="605" />
+        <location filename="../gui/config_view.py" line="872" />
         <source>Save rules</source>
         <translation>Regeln speichern</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="623" />
+        <location filename="../gui/config_view.py" line="607" />
         <source>Revert</source>
         <translation>Verwerfen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="630" />
+        <location filename="../gui/config_view.py" line="614" />
         <source>Rules are checked top to bottom; the first match wins.</source>
         <translation>Regeln werden von oben nach unten geprüft; der erste Treffer gewinnt.</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="729" />
+        <location filename="../gui/config_view.py" line="713" />
         <source>Categorizes %1 bookings.</source>
         <translation>Kategorisiert %1 Buchungen.</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="732" />
+        <location filename="../gui/config_view.py" line="716" />
         <source>Matches %1; %2 of them are taken by rules above it.</source>
         <translation>Trifft auf %1 zu; %2 davon nehmen Regeln weiter oben.</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="811" />
+        <location filename="../gui/config_view.py" line="795" />
         <source>Matches %1 bookings (%2 currently uncategorized).</source>
         <translation>Trifft auf %1 Buchungen zu (%2 derzeit unkategorisiert).</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="799" />
+        <location filename="../gui/config_view.py" line="783" />
         <source>Invalid rule: %1</source>
         <translation>Ungültige Regel: %1</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="554" />
+        <location filename="../gui/config_view.py" line="538" />
         <source>Search rules (id, category, pattern)…</source>
         <extracomment>unsaved changes appeared (True) or were saved / discarded (False) show these bookings (ids) on the bookings page, labelled</extracomment>
         <translation>Regeln durchsuchen (ID, Kategorie, Muster)…</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="816" />
+        <location filename="../gui/config_view.py" line="800" />
         <source>%1 of them are taken by rules above it.</source>
         <translation>%1 davon nehmen Regeln weiter oben.</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="820" />
+        <location filename="../gui/config_view.py" line="804" />
         <source>Show bookings</source>
         <translation>Buchungen anzeigen</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="833" />
+        <location filename="../gui/config_view.py" line="817" />
         <source>bookings matching the rule “%1”</source>
         <translation>Buchungen, auf die die Regel „%1“ zutrifft</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="893" />
+        <location filename="../gui/config_view.py" line="877" />
         <source>Rules saved</source>
         <translation>Regeln gespeichert</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="895" />
+        <location filename="../gui/config_view.py" line="879" />
         <source>Re-run categorization for all bookings now? Manually categorized bookings are not changed.</source>
         <translation>Kategorisierung jetzt für alle Buchungen neu ausführen? Manuell kategorisierte Buchungen bleiben unverändert.</translation>
     </message>
     <message>
-        <location filename="../gui/config_view.py" line="902" />
+        <location filename="../gui/config_view.py" line="886" />
         <source>Categorization</source>
         <translation>Kategorisierung</translation>
     </message>
